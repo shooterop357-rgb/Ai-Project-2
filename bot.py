@@ -1,4 +1,6 @@
-import os, re, asyncio
+import os
+import re
+import asyncio
 from collections import deque
 from datetime import datetime, timedelta
 import pytz
@@ -14,23 +16,23 @@ from telegram.ext import (
 from telegram.request import HTTPXRequest
 from groq import Groq
 
-# ================= CONFIG =================
+# ================== ENV ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 BOT_NAME = "Miss Bloosm"
 OWNER_NAME = "Frx_Shooter"
-OWNER_ID = 5436530930   # <-- YOUR ID
+OWNER_ID = 5436530930  # <-- YOUR TELEGRAM ID
 
 client = Groq(api_key=GROQ_API_KEY)
 
-# ================= SETTINGS =================
+# ================== SETTINGS ==================
 bot_settings = {
     "group_reply": False,   # silent in groups
     "welcome": True
 }
 
-# ================= MEMORY =================
+# ================== MEMORY ==================
 user_memory = {}
 
 def get_memory(uid):
@@ -38,7 +40,7 @@ def get_memory(uid):
         user_memory[uid] = deque(maxlen=30)
     return user_memory[uid]
 
-# ================= OWNER =================
+# ================== OWNER ==================
 def is_owner(uid):
     return uid == OWNER_ID
 
@@ -54,15 +56,14 @@ def owner_intent(text):
         return ("welcome", False)
     return None
 
-# ================= HELPERS =================
+# ================== HELPERS ==================
 def clean_reply(text):
     text = re.sub(r"\*[^*]+\*", "", text).strip()
     return text if text else "🙂"
 
-def get_time():
+def now_time():
     tz = pytz.timezone("Asia/Kolkata")
-    now = datetime.now(tz)
-    return now
+    return datetime.now(tz)
 
 def is_greeting(text):
     return text.lower().strip() in [
@@ -88,7 +89,7 @@ def detect_emotion(text):
         return "angry"
     return "neutral"
 
-# ================= START =================
+# ================== START ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"Hey 👋 I'm {BOT_NAME}.\n"
@@ -97,7 +98,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Just type anything 🙂"
     )
 
-# ================= WELCOME =================
+# ================== WELCOME ==================
 async def welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not bot_settings["welcome"]:
         return
@@ -107,74 +108,12 @@ async def welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Please mention me if needed."
     )
 
-# ================= MAIN =================
-async def reply_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-
-    user = update.effective_user
-    text = update.message.text.strip()
-
-    # OWNER CONTROL
-    if is_owner(user.id):
-        intent = owner_intent(text)
-        if intent:
-            k,v = intent
-            bot_settings[k] = v
-            await update.message.reply_text(f"Done 👍 `{k}` set to `{v}`")
-            return
-
-    # GROUP FLOOD CONTROL
-    if update.message.chat.type in ["group","supergroup"]:
-        if not bot_settings["group_reply"]:
-            if not (
-                update.message.reply_to_message
-                and update.message.reply_to_message.from_user.is_bot
-            ) and f"@{context.bot.username}" not in text:
-                return
-
-    # GREETING (NO RETURN – API STILL RUNS)
-    if is_greeting(text):
-        h = get_time().hour
-        if h < 12:
-            await update.message.reply_text("Good morning ☀️")
-        elif h < 17:
-            await update.message.reply_text("Good afternoon 🌤️")
-        elif h < 22:
-            await update.message.reply_text("Good evening 🌆")
-        else:
-            await update.message.reply_text("Good night 🌙")
-
-    # TIME / DATE
-    if is_time_q(text):
-        now = get_time()
-        await update.message.reply_text(
-            f"{now.strftime('%A')} 📅\n"
-            f"{now.strftime('%d %B %Y')}\n"
-            f"{now.strftime('%I:%M %p')} ⏰"
-        )
-        return
-
-    # TOMORROW
-    if is_tomorrow_q(text):
-        tm = get_time() + timedelta(days=1)
-        await update.message.reply_text(
-            f"Tomorrow is {tm.strftime('%A')} 📅\n"
-            f"{tm.strftime('%d %B %Y')}"
-        )
-        return
-
-    # AI CHAT
-    memory = get_memory(user.id)
-    memory.append(text)
-
-    emotion = detect_emotion(text)
-    max_tokens = 120 if needs_long(text) else 40
-
+# ================== BACKGROUND AI ==================
+async def send_ai_reply(update, context, text):
     try:
         await update.message.chat.send_action("typing")
 
-        res = client.chat.completions.create(
+        response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
                 {
@@ -187,20 +126,88 @@ async def reply_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"Replies must be short, clean, and human."
                     )
                 },
-                {"role":"user","content":f"[emotion:{emotion}] {text}"}
+                {"role": "user", "content": text}
             ],
             temperature=0.7,
-            max_tokens=max_tokens
+            max_tokens=60
         )
 
-        reply = clean_reply(res.choices[0].message.content)
+        reply = clean_reply(response.choices[0].message.content)
         await update.message.reply_text(reply)
-        await asyncio.sleep(0.3)
 
     except Exception:
-        await update.message.reply_text("Thoda issue aaya… phir se bolo 🙂")
+        pass
 
-# ================= RUN =================
+# ================== MAIN ==================
+async def reply_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+
+    user = update.effective_user
+    text = update.message.text.strip()
+
+    # OWNER AUTO CONTROL
+    if is_owner(user.id):
+        intent = owner_intent(text)
+        if intent:
+            k, v = intent
+            bot_settings[k] = v
+            await update.message.reply_text(f"Done 👍 `{k}` set to `{v}`")
+            return
+
+    # GROUP FLOOD CONTROL
+    if update.message.chat.type in ["group", "supergroup"]:
+        if not bot_settings["group_reply"]:
+            if not (
+                update.message.reply_to_message
+                and update.message.reply_to_message.from_user.is_bot
+            ) and f"@{context.bot.username}" not in text:
+                return
+
+    # GREETING (NO RETURN – AI STILL RUNS)
+    if is_greeting(text):
+        h = now_time().hour
+        if h < 12:
+            await update.message.reply_text("Good morning ☀️")
+        elif h < 17:
+            await update.message.reply_text("Good afternoon 🌤️")
+        elif h < 22:
+            await update.message.reply_text("Good evening 🌆")
+        else:
+            await update.message.reply_text("Good night 🌙")
+
+    # TIME / DATE
+    if is_time_q(text):
+        n = now_time()
+        await update.message.reply_text(
+            f"{n.strftime('%A')} 📅\n"
+            f"{n.strftime('%d %B %Y')}\n"
+            f"{n.strftime('%I:%M %p')} ⏰"
+        )
+        return
+
+    # TOMORROW
+    if is_tomorrow_q(text):
+        tm = now_time() + timedelta(days=1)
+        await update.message.reply_text(
+            f"Tomorrow is {tm.strftime('%A')} 📅\n"
+            f"{tm.strftime('%d %B %Y')}"
+        )
+        return
+
+    # MEMORY
+    memory = get_memory(user.id)
+    memory.append(text)
+
+    # 🔥 INSTANT ACK (PREVENTS TIMEOUT)
+    await update.message.reply_text("…")
+
+    # 🔥 BACKGROUND AI (NO TIMEOUT)
+    context.application.create_task(
+        send_ai_reply(update, context, f"[emotion:{detect_emotion(text)}] {text}")
+    )
+
+# ================== RUN ==================
 def main():
     request = HTTPXRequest(
         connect_timeout=20,
@@ -210,6 +217,7 @@ def main():
     )
 
     app = ApplicationBuilder().token(BOT_TOKEN).request(request).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply_ai))
