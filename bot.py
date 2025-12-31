@@ -12,6 +12,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.constants import ChatAction
 
 from groq import Groq
 
@@ -20,7 +21,7 @@ from groq import Groq
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")  # INDIAN CALENDAR API
+HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")
 
 # =========================
 # CORE IDENTITY
@@ -35,7 +36,7 @@ TIMEZONE = pytz.timezone("Asia/Kolkata")
 client = Groq(api_key=GROQ_API_KEY)
 
 # =========================
-# LONG MEMORY (FILE)
+# LONG MEMORY
 # =========================
 MEMORY_FILE = "memory.json"
 MAX_MEMORY = 200
@@ -53,14 +54,14 @@ def save_memory(data):
         json.dump(data, f, indent=2)
 
 # =========================
-# TIME CONTEXT (IST)
+# TIME CONTEXT
 # =========================
 def ist_context():
     now = datetime.now(TIMEZONE)
     return now.strftime("%A, %d %B %Y | %I:%M %p IST")
 
 # =========================
-# INDIAN HOLIDAYS (API)
+# HOLIDAYS
 # =========================
 def get_indian_holidays():
     year = datetime.now(TIMEZONE).year
@@ -80,12 +81,11 @@ def get_indian_holidays():
                 upcoming.append(f"{item['name']} ({d.strftime('%d %b')})")
 
         return ", ".join(upcoming[:5]) if upcoming else "No upcoming holidays found"
-
     except Exception:
         return None
 
 # =========================
-# /START
+# START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     intro = (
@@ -98,7 +98,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(intro)
 
 # =========================
-# MAIN CHAT
+# CHAT
 # =========================
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -140,6 +140,9 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     messages.extend(memory[uid])
 
     try:
+        # ✅ Typing indicator added
+        await update.message.chat.send_action(ChatAction.TYPING)
+
         response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=messages,
@@ -159,7 +162,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 # =========================
-# RUN BOT
+# RUN
 # =========================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
