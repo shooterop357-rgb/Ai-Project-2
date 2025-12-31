@@ -5,7 +5,6 @@ import pytz
 import requests
 
 from telegram import Update
-from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -15,15 +14,13 @@ from telegram.ext import (
 )
 
 from groq import Groq
-from openai import OpenAI
 
 # =========================
 # ENV VARIABLES
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")
+HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")  # INDIAN CALENDAR API
 
 # =========================
 # CORE IDENTITY
@@ -33,13 +30,12 @@ DEVELOPER = "@Frx_Shooter"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
 # =========================
-# AI CLIENTS
+# GROQ CLIENT
 # =========================
-groq_client = Groq(api_key=GROQ_API_KEY)
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
+client = Groq(api_key=GROQ_API_KEY)
 
 # =========================
-# MEMORY
+# LONG MEMORY (FILE)
 # =========================
 MEMORY_FILE = "memory.json"
 MAX_MEMORY = 200
@@ -57,14 +53,14 @@ def save_memory(data):
         json.dump(data, f, indent=2)
 
 # =========================
-# TIME CONTEXT
+# TIME CONTEXT (IST)
 # =========================
 def ist_context():
     now = datetime.now(TIMEZONE)
     return now.strftime("%A, %d %B %Y | %I:%M %p IST")
 
 # =========================
-# HOLIDAYS
+# INDIAN HOLIDAYS (API)
 # =========================
 def get_indian_holidays():
     year = datetime.now(TIMEZONE).year
@@ -83,7 +79,8 @@ def get_indian_holidays():
             if d >= today:
                 upcoming.append(f"{item['name']} ({d.strftime('%d %b')})")
 
-        return ", ".join(upcoming[:5]) if upcoming else None
+        return ", ".join(upcoming[:5]) if upcoming else "No upcoming holidays found"
+
     except Exception:
         return None
 
@@ -101,24 +98,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(intro)
 
 # =========================
-# CHAT
+# MAIN CHAT
 # =========================
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
-    # 👉 TYPING INDICATOR (ONLY ADDITION)
-    await context.bot.send_chat_action(
-        chat_id=update.effective_chat.id,
-        action=ChatAction.TYPING
-    )
-
     user = update.effective_user
-    uid = str(user.id)
     user_text = update.message.text.strip()
 
     memory = load_memory()
-    memory.setdefault(uid, [])
+    uid = str(user.id)
+
+    if uid not in memory:
+        memory[uid] = []
 
     memory[uid].append({"role": "user", "content": user_text})
     memory[uid] = memory[uid][-MAX_MEMORY:]
@@ -128,9 +121,15 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     system_prompt = (
         f"You are {BOT_NAME}, a female AI assistant.\n"
-        f"Your developer is {DEVELOPER}.\n"
-        "You speak calmly, emotionally, and naturally like a human.\n"
-        "Never mention technical details or errors.\n"
+        f"Developer: {DEVELOPER}.\n\n"
+        "Purpose:\n"
+        "- Calm, friendly, professional conversation\n"
+        "- Human-like tone\n"
+        "- Light emojis allowed naturally\n\n"
+        "Rules:\n"
+        "- No automatic or scripted replies\n"
+        "- Never mention errors or technical issues\n"
+        "- If unsure, respond naturally like a human\n\n"
         f"Current time (IST): {ist_context()}\n"
     )
 
@@ -140,40 +139,27 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(memory[uid])
 
-    reply = None
-
-    # ---- OPENAI FIRST ----
     try:
-        r = openai_client.responses.create(
-            model="gpt-4.1-mini",
-            input=messages,
-            temperature=0.9
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=messages,
+            temperature=0.65,
+            max_tokens=200,
         )
-        reply = r.output_text.strip()
-    except Exception:
-        reply = None
 
-    # ---- GROQ FALLBACK ----
-    if not reply:
-        try:
-            r = groq_client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=messages,
-                temperature=0.65,
-                max_tokens=200,
-            )
-            reply = r.choices[0].message.content.strip()
-        except Exception:
-            return  # silent (old method)
+        reply = response.choices[0].message.content.strip()
 
-    if reply:
         memory[uid].append({"role": "assistant", "content": reply})
         memory[uid] = memory[uid][-MAX_MEMORY:]
         save_memory(memory)
+
         await update.message.reply_text(reply)
 
+    except Exception:
+        return
+
 # =========================
-# RUN
+# RUN BOT
 # =========================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
