@@ -5,6 +5,7 @@ import pytz
 import requests
 
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -20,7 +21,7 @@ from groq import Groq
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")  # INDIAN CALENDAR API
+HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")
 
 # =========================
 # CORE IDENTITY
@@ -63,10 +64,6 @@ def ist_context():
 # INDIAN HOLIDAYS (API)
 # =========================
 def get_indian_holidays():
-    """
-    Uses API Ninjas style API:
-    https://api.api-ninjas.com/v1/holidays?country=IN&year=YYYY
-    """
     year = datetime.now(TIMEZONE).year
     url = f"https://api.api-ninjas.com/v1/holidays?country=IN&year={year}"
     headers = {"X-Api-Key": HOLIDAY_API_KEY}
@@ -83,26 +80,27 @@ def get_indian_holidays():
             if d >= today:
                 upcoming.append(f"{item['name']} ({d.strftime('%d %b')})")
 
-        return ", ".join(upcoming[:5]) if upcoming else "No upcoming holidays found"
+        return ", ".join(upcoming[:5]) if upcoming else None
 
     except Exception:
-        return None  # silent failure
+        return None
 
 # =========================
-# /START (ONLY FIXED MESSAGE)
+# /START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     intro = (
         f"Hello, I’m {BOT_NAME} 🌸\n\n"
         "I’m a calm, friendly AI designed for natural conversations.\n"
-        "Human Like Replay Feels Emotionas.\n\n"
+        "Human Like Replay Feels Emotionas.\n"
+        "You can talk to me in Any language.\n\n"
         "⚠️ This bot is currently in beta.\n"
         "Some replies may not always be perfect."
     )
     await update.message.reply_text(intro)
 
 # =========================
-# MAIN CHAT (PURE AI ONLY)
+# MAIN CHAT (PURE AI)
 # =========================
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -122,21 +120,21 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     memory[uid] = memory[uid][-MAX_MEMORY:]
     save_memory(memory)
 
-    # Calendar context from API
+    # 🔹 CHANGE 1: Typing indicator
+    await update.message.chat.send_action(ChatAction.TYPING)
+
     holidays_context = get_indian_holidays()
 
-    # SYSTEM PROMPT (ONLY MEMORY & CONTEXT)
     system_prompt = (
         f"You are {BOT_NAME}, a female AI assistant.\n"
         f"Developer: {DEVELOPER}.\n\n"
         "Purpose:\n"
         "- Calm, friendly, professional conversation\n"
         "- Human-like tone\n"
-        "- Light emojis allowed naturally\n\n"
+        "- Light, natural emojis allowed 🙂🌸🤍\n\n"
         "Rules:\n"
         "- No automatic or scripted replies\n"
-        "- Never mention errors or technical issues\n"
-        "- If unsure, respond naturally like a human\n\n"
+        "- Never mention errors or technical issues\n\n"
         f"Current time (IST): {ist_context()}\n"
     )
 
@@ -156,7 +154,6 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         reply = response.choices[0].message.content.strip()
 
-        # Save assistant reply
         memory[uid].append({"role": "assistant", "content": reply})
         memory[uid] = memory[uid][-MAX_MEMORY:]
         save_memory(memory)
@@ -164,7 +161,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
 
     except Exception:
-        # Bot stays silent on any failure
+        # 🔹 CHANGE 2: Silent failure (no message)
         return
 
 # =========================
