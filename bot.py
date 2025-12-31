@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 import pytz
 import requests
+import asyncio
 
 from telegram import Update
 from telegram.ext import (
@@ -20,7 +21,7 @@ from groq import Groq
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")  # INDIAN CALENDAR API
+HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")
 
 # =========================
 # CORE IDENTITY
@@ -79,8 +80,7 @@ def get_indian_holidays():
             if d >= today:
                 upcoming.append(f"{item['name']} ({d.strftime('%d %b')})")
 
-        return ", ".join(upcoming[:5]) if upcoming else "No upcoming holidays found"
-
+        return ", ".join(upcoming[:5]) if upcoming else None
     except Exception:
         return None
 
@@ -91,14 +91,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     intro = (
         f"Hello, I’m {BOT_NAME} 🌸\n\n"
         "I’m a calm, friendly AI designed for natural conversations.\n"
-        "Human Like Replay Feels Emotions.\n\n"
+        "Human Like Replay Feels Emotionas.\n\n"
         "⚠️ This bot is currently in beta.\n"
         "Some replies may not always be perfect."
     )
     await update.message.reply_text(intro)
 
 # =========================
-# MAIN CHAT
+# MAIN CHAT (FIXED)
 # =========================
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -109,10 +109,9 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     memory = load_memory()
     uid = str(user.id)
+    memory.setdefault(uid, [])
 
-    if uid not in memory:
-        memory[uid] = []
-
+    # save user msg
     memory[uid].append({"role": "user", "content": user_text})
     memory[uid] = memory[uid][-MAX_MEMORY:]
     save_memory(memory)
@@ -139,6 +138,9 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(memory[uid])
 
+    reply = None
+
+    # ---- TRY 1 ----
     try:
         response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
@@ -146,27 +148,42 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             temperature=0.65,
             max_tokens=200,
         )
-
         reply = response.choices[0].message.content.strip()
-
-        memory[uid].append({"role": "assistant", "content": reply})
-        memory[uid] = memory[uid][-MAX_MEMORY:]
-        save_memory(memory)
-
-        await update.message.reply_text(reply)
-
     except Exception:
-        return
+        reply = None
+
+    # ---- RETRY ONCE ----
+    if not reply:
+        await asyncio.sleep(0.6)
+        try:
+            response = client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=messages,
+                temperature=0.65,
+                max_tokens=200,
+            )
+            reply = response.choices[0].message.content.strip()
+        except Exception:
+            reply = None
+
+    # ---- SOFT FALLBACK ----
+    if not reply:
+        reply = "I’m here 🙂 Tell me a little more."
+
+    # save assistant msg
+    memory[uid].append({"role": "assistant", "content": reply})
+    memory[uid] = memory[uid][-MAX_MEMORY:]
+    save_memory(memory)
+
+    await update.message.reply_text(reply)
 
 # =========================
 # RUN BOT
 # =========================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-
     print("Miss Bloosm is running 🌸")
     app.run_polling()
 
