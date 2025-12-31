@@ -1,7 +1,9 @@
 import os
+import re
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
+import asyncio
 
 from telegram import Update
 from telegram.ext import (
@@ -11,6 +13,7 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
+from telegram.request import HTTPXRequest
 from groq import Groq
 
 # ===== ENV =====
@@ -18,9 +21,17 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 BOT_NAME = "Miss Bloosm"
-OWNER_NAME = "@Frx_Shooter"
+OWNER_NAME = "Frx_Shooter"
+OWNER_ID = 5436530930  # <-- YOUR ID
 
 client = Groq(api_key=GROQ_API_KEY)
+
+# ===== SETTINGS (AUTO CONTROLLED BY OWNER) =====
+bot_settings = {
+    "group_reply": False,      # group me silent
+    "welcome": True,           # welcome ON
+    "mode": "mention_only"     # reply only on mention/reply
+}
 
 # ===== MEMORY =====
 user_memory = {}
@@ -31,13 +42,27 @@ def get_memory(user_id):
         user_memory[user_id] = deque(maxlen=30)
     return user_memory[user_id]
 
-def get_owner_step(user_id):
-    return owner_about_step.get(user_id, 0)
+# ===== OWNER DETECT =====
+def is_owner(user_id: int) -> bool:
+    return user_id == OWNER_ID
 
-def set_owner_step(user_id, step):
-    owner_about_step[user_id] = step
+def owner_setting_intent(text: str):
+    t = text.lower()
+    if "group reply on" in t:
+        return ("group_reply", True)
+    if "group reply off" in t:
+        return ("group_reply", False)
+    if "welcome on" in t:
+        return ("welcome", True)
+    if "welcome off" in t:
+        return ("welcome", False)
+    return None
 
-# ===== TIME HELPERS =====
+# ===== CLEAN AI REPLY =====
+def clean_reply(text: str) -> str:
+    return re.sub(r"\*[^*]+\*", "", text).strip()
+
+# ===== TIME =====
 def get_time_info():
     tz = pytz.timezone("Asia/Kolkata")
     now = datetime.now(tz)
@@ -50,63 +75,50 @@ def get_time_info():
 
 # ===== DETECTORS =====
 def is_greeting(text: str) -> bool:
-    keys = ["hi", "hello", "hey", "gm", "good morning", "gn", "good night"]
-    return any(k in text.lower() for k in keys)
+    return any(k in text.lower() for k in ["hi", "hello", "hey", "gm", "good morning", "gn", "good night"])
 
 def is_time_question(text: str) -> bool:
-    keys = ["time", "date", "day", "aaj kya din", "kitna time"]
-    return any(k in text.lower() for k in keys)
+    return any(k in text.lower() for k in ["time", "date", "day", "aaj kya din", "kitna time"])
 
 def is_identity_question(text: str) -> bool:
-    keys = [
-        "who developed you", "who made you", "developer", "owner",
-        "tumhe kisne banaya", "developer kon", "owner kon",
-        "your name", "tumhara naam"
-    ]
-    return any(k in text.lower() for k in keys)
-
-def is_owner_about_question(text: str) -> bool:
-    keys = [
-        "who is frx", "who is frx shooter", "about frx",
-        "tell me about your owner", "frx shooter kon"
-    ]
-    return any(k in text.lower() for k in keys)
+    return any(k in text.lower() for k in ["who developed you", "who made you", "developer", "owner", "your name"])
 
 def is_user_identity_question(text: str) -> bool:
-    keys = ["who am i", "main kaun ho", "me kaun hu", "mera naam kya hai"]
-    return any(k in text.lower() for k in keys)
+    return any(k in text.lower() for k in ["who am i", "who i am", "main kaun ho", "me kaun hu"])
 
 def needs_long_reply(text: str) -> bool:
-    keys = ["explain", "detail", "why", "how", "kaise", "kyu", "samjhao"]
-    return any(k in text.lower() for k in keys)
+    return any(k in text.lower() for k in ["explain", "detail", "why", "how", "kaise", "kyu"])
 
 def detect_emotion(text: str) -> str:
     t = text.lower()
-    if any(k in t for k in ["sad", "alone", "broken", "depressed", "dukhi"]):
+    if any(k in t for k in ["sad", "alone", "broken", "dukhi"]):
         return "sad"
-    if any(k in t for k in ["happy", "excited", "good", "great", "acha"]):
+    if any(k in t for k in ["happy", "excited", "acha"]):
         return "happy"
-    if any(k in t for k in ["angry", "gussa", "irritated"]):
+    if any(k in t for k in ["angry", "gussa"]):
         return "angry"
-    if any(k in t for k in ["lonely", "miss you", "akela"]):
-        return "lonely"
     return "neutral"
-
-def analyze_memory(memory) -> str:
-    joined = " ".join(memory).lower()
-    if any(k in joined for k in ["code", "bot", "api"]):
-        return "tech"
-    if any(k in joined for k in ["study", "exam"]):
-        return "student"
-    if any(k in joined for k in ["photo", "design"]):
-        return "creative"
-    return "general"
 
 # ===== START =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"Hey 👋 I'm {BOT_NAME}.\nTalk to me freely 🙂"
+        f"Hey 👋 I'm {BOT_NAME}.\n"
+        f"⚠️ Bot is under **BETA phase**.\n"
+        f"Replies may be incorrect sometimes.\n\n"
+        f"Feel free to chat 🙂"
     )
+
+# ===== WELCOME (GROUP) =====
+async def welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not bot_settings["welcome"]:
+        return
+    for member in update.message.new_chat_members:
+        await update.message.reply_text(
+            "Welcome 🙂\n"
+            "⚠️ This bot is under **BETA phase**.\n"
+            "Replies may be incorrect.\n"
+            "Please mention me if needed."
+        )
 
 # ===== MAIN CHAT =====
 async def reply_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -114,91 +126,70 @@ async def reply_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user = update.effective_user
-    user_text = update.message.text.strip()
-    memory = get_memory(user.id)
+    text = update.message.text.strip()
 
-    # GREETINGS
-    if is_greeting(user_text):
+    # OWNER AUTO CONTROL
+    if is_owner(user.id):
+        intent = owner_setting_intent(text)
+        if intent:
+            key, value = intent
+            bot_settings[key] = value
+            await update.message.reply_text(f"Done 👍 `{key}` set to `{value}`")
+            return
+
+    # GROUP FLOOD CONTROL
+    if update.message.chat.type in ["group", "supergroup"]:
+        if not bot_settings["group_reply"]:
+            if not (
+                update.message.reply_to_message
+                and update.message.reply_to_message.from_user.is_bot
+            ) and f"@{context.bot.username}" not in text:
+                return
+
+    # GREETING
+    if is_greeting(text):
         t = get_time_info()
         h = t["hour"]
         if 5 <= h < 12:
-            msg = "Good morning ☀️\nHope aaj ka din bright ho ✨"
+            msg = "Good morning ☀️ Hope aaj ka din acha ho ✨"
         elif 12 <= h < 17:
-            msg = "Good afternoon 🌤️\nDay kaisa ja raha hai?"
+            msg = "Good afternoon 🌤️ Day kaisa ja raha hai?"
         elif 17 <= h < 22:
-            msg = "Good evening 🌆\nThoda relax ka time 🙂"
+            msg = "Good evening 🌆 Thoda relax karo 🙂"
         else:
-            msg = "Good night 🌙\nAaram se rest karo, kal naya din hai ✨"
+            msg = "Good night 🌙 Aaram se rest karo ✨"
         await update.message.reply_text(msg)
         return
 
     # TIME / DATE
-    if is_time_question(user_text):
+    if is_time_question(text):
         t = get_time_info()
         await update.message.reply_text(
-            f"Today is {t['day']} 📅\n"
-            f"Date: {t['date']}\n"
-            f"Time: {t['time']} ⏰"
+            f"{t['day']} 📅\nDate: {t['date']}\nTime: {t['time']} ⏰"
         )
         return
 
     # BOT IDENTITY
-    if is_identity_question(user_text):
+    if is_identity_question(text):
         await update.message.reply_text(
-            f"My name is {BOT_NAME}.\n"
-            f"I was developed and designed by {OWNER_NAME}."
+            f"My name is {BOT_NAME}.\nDeveloped by {OWNER_NAME}."
         )
         return
 
-    # OWNER ABOUT (MULTI-STEP)
-    if is_owner_about_question(user_text):
-        step = get_owner_step(user.id)
-        if step == 0:
-            msg = (
-                "He’s a Python-based developer — always learning 🐍✨\n"
-                "Also a photographer by passion 📸"
-            )
-            set_owner_step(user.id, 1)
-        elif step == 1:
-            msg = "He’s been on Telegram since 2018, putting real effort 🌱"
-            set_owner_step(user.id, 2)
-        else:
-            msg = (
-                "One of his known projects is **@MultiSaverProBot** 🚀\n"
-                "Popular on Telegram & Instagram."
-            )
-            set_owner_step(user.id, 0)
-        await update.message.reply_text(msg)
-        return
-
-    # USER IDENTITY (HYBRID)
-    if is_user_identity_question(user_text):
-        name = user.first_name or "friend"
-        style = analyze_memory(memory)
-        hint = "You feel thoughtful and real 🙂"
-        if style == "tech":
-            hint = "You give a tech-curious vibe 💻"
-        elif style == "student":
-            hint = "You feel like a learner 📚"
-        elif style == "creative":
-            hint = "You feel creative 🎨"
-
+    # USER IDENTITY
+    if is_user_identity_question(text):
         await update.message.reply_text(
-            f"You're **{name}** ✨\n{hint}"
+            f"You're **{user.first_name}** ✨\n"
+            "And you matter here 🙂"
         )
         return
 
-    # REPEAT CHECK
-    if user_text.lower() in (m.lower() for m in memory):
-        await update.message.reply_text(
-            "Hmm… ye baat tum pehle bhi bol chuke ho 🙂"
-        )
-        return
+    # AI CHAT
+    memory = get_memory(user.id)
+    memory.append(text)
 
-    memory.append(user_text)
-
-    emotion = detect_emotion(user_text)
-    max_tokens = 150 if needs_long_reply(user_text) else 50
+    emotion = detect_emotion(text)
+    max_tokens = 120 if needs_long_reply(text) else 40
 
     try:
         response = client.chat.completions.create(
@@ -207,33 +198,40 @@ async def reply_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 {
                     "role": "system",
                     "content": (
-                        f"You are {BOT_NAME}, a warm, human-like AI.\n"
-                        f"Be emotional, short, and natural.\n"
-                        f"Do not mention owner unless asked."
+                        f"You are {BOT_NAME}, chatting like a real human.\n"
+                        f"Use simple emojis 🙂✨\n"
+                        f"Do NOT use roleplay actions like *smile*.\n"
+                        f"Replies must be short, clean, and natural."
                     )
                 },
-                {
-                    "role": "user",
-                    "content": f"[emotion: {emotion}] {user_text}"
-                }
+                {"role": "user", "content": f"[emotion:{emotion}] {text}"}
             ],
             temperature=0.7,
             max_tokens=max_tokens
         )
-        await update.message.reply_text(
-            response.choices[0].message.content
-        )
+
+        reply = clean_reply(response.choices[0].message.content)
+        await update.message.reply_text(reply)
+        await asyncio.sleep(0.3)
 
     except Exception:
-        await update.message.reply_text(
-            "Thoda issue aaya… phir se bolo 🙂"
-        )
+        await update.message.reply_text("Thoda issue aaya… phir se bolo 🙂")
 
 # ===== RUN =====
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    request = HTTPXRequest(
+        connect_timeout=20,
+        read_timeout=20,
+        write_timeout=20,
+        pool_timeout=20
+    )
+
+    app = ApplicationBuilder().token(BOT_TOKEN).request(request).build()
+
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply_ai))
+
     print("Miss Bloosm is running...")
     app.run_polling()
 
