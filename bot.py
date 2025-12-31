@@ -5,6 +5,7 @@ import pytz
 import requests
 
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -38,7 +39,7 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 # =========================
-# LONG MEMORY
+# MEMORY
 # =========================
 MEMORY_FILE = "memory.json"
 MAX_MEMORY = 200
@@ -63,7 +64,7 @@ def ist_context():
     return now.strftime("%A, %d %B %Y | %I:%M %p IST")
 
 # =========================
-# INDIAN HOLIDAYS
+# HOLIDAYS
 # =========================
 def get_indian_holidays():
     year = datetime.now(TIMEZONE).year
@@ -100,11 +101,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(intro)
 
 # =========================
-# MAIN CHAT
+# CHAT
 # =========================
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
+
+    # 👉 TYPING INDICATOR (ONLY ADDITION)
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action=ChatAction.TYPING
+    )
 
     user = update.effective_user
     uid = str(user.id)
@@ -123,8 +130,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"You are {BOT_NAME}, a female AI assistant.\n"
         f"Your developer is {DEVELOPER}.\n"
         "You speak calmly, emotionally, and naturally like a human.\n"
-        "You understand feelings and reply warmly.\n"
-        "Never mention errors or technical details.\n"
+        "Never mention technical details or errors.\n"
         f"Current time (IST): {ist_context()}\n"
     )
 
@@ -136,18 +142,18 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply = None
 
-    # ===== OPENAI FIRST (better replies) =====
+    # ---- OPENAI FIRST ----
     try:
         r = openai_client.responses.create(
             model="gpt-4.1-mini",
             input=messages,
-            temperature=0.9  # <-- OPENAI BORING FIX
+            temperature=0.9
         )
         reply = r.output_text.strip()
     except Exception:
         reply = None
 
-    # ===== GROQ FALLBACK (old method) =====
+    # ---- GROQ FALLBACK ----
     if not reply:
         try:
             r = groq_client.chat.completions.create(
@@ -158,7 +164,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             reply = r.choices[0].message.content.strip()
         except Exception:
-            return  # SILENT
+            return  # silent (old method)
 
     if reply:
         memory[uid].append({"role": "assistant", "content": reply})
@@ -167,7 +173,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
 
 # =========================
-# RUN BOT
+# RUN
 # =========================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
