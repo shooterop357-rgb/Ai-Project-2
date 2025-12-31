@@ -5,7 +5,6 @@ import pytz
 import requests
 
 from telegram import Update
-from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -21,7 +20,7 @@ from groq import Groq
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")
+HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")  # INDIAN CALENDAR API
 
 # =========================
 # CORE IDENTITY
@@ -80,7 +79,7 @@ def get_indian_holidays():
             if d >= today:
                 upcoming.append(f"{item['name']} ({d.strftime('%d %b')})")
 
-        return ", ".join(upcoming[:5]) if upcoming else None
+        return ", ".join(upcoming[:5]) if upcoming else "No upcoming holidays found"
 
     except Exception:
         return None
@@ -92,15 +91,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     intro = (
         f"Hello, I’m {BOT_NAME} 🌸\n\n"
         "I’m a calm, friendly AI designed for natural conversations.\n"
-        "Human Like Replay Feels Emotionas.\n"
-        "You can talk to me in Any language.\n\n"
+        "Human Like Replay Feels Emotions.\n\n"
         "⚠️ This bot is currently in beta.\n"
         "Some replies may not always be perfect."
     )
     await update.message.reply_text(intro)
 
 # =========================
-# MAIN CHAT (PURE AI)
+# MAIN CHAT
 # =========================
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -115,13 +113,9 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid not in memory:
         memory[uid] = []
 
-    # Save user message
     memory[uid].append({"role": "user", "content": user_text})
     memory[uid] = memory[uid][-MAX_MEMORY:]
     save_memory(memory)
-
-    # 🔹 CHANGE 1: Typing indicator
-    await update.message.chat.send_action(ChatAction.TYPING)
 
     holidays_context = get_indian_holidays()
 
@@ -131,10 +125,11 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Purpose:\n"
         "- Calm, friendly, professional conversation\n"
         "- Human-like tone\n"
-        "- Light, natural emojis allowed 🙂🌸🤍\n\n"
+        "- Light emojis allowed naturally\n\n"
         "Rules:\n"
         "- No automatic or scripted replies\n"
-        "- Never mention errors or technical issues\n\n"
+        "- Never mention errors or technical issues\n"
+        "- If unsure, respond naturally like a human\n\n"
         f"Current time (IST): {ist_context()}\n"
     )
 
@@ -161,7 +156,6 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
 
     except Exception:
-        # 🔹 CHANGE 2: Silent failure (no message)
         return
 
 # =========================
