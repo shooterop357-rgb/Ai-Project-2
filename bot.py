@@ -1,4 +1,4 @@
-    import os
+import os
 from collections import deque
 from telegram import Update
 from telegram.constants import ChatAction, ChatType
