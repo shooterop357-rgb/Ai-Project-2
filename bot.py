@@ -21,7 +21,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 BOT_NAME = "Miss Bloosm"
-OWNER_NAME = "Frx_Shooter"
+OWNER_NAME = "@Frx_Shooter"
 OWNER_ID = 5436530930  # <-- YOUR TELEGRAM ID
 
 client = Groq(api_key=GROQ_API_KEY)
