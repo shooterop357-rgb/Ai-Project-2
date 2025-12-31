@@ -1,227 +1,163 @@
+import json
 import os
-import re
-import asyncio
-from collections import deque
-from datetime import datetime, timedelta
 import pytz
-
+from datetime import datetime
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder,
-    MessageHandler,
-    CommandHandler,
     ContextTypes,
+    CommandHandler,
+    MessageHandler,
     filters
 )
-from telegram.request import HTTPXRequest
-from groq import Groq
+from openai import OpenAI
 
-# ================= ENV =================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# ===================== CONFIG =====================
+BOT_TOKEN = os.getenv("BOT_TOKEN")          # Telegram Bot Token
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+OWNER_ID = 5436530930   # YOUR TELEGRAM ID
 BOT_NAME = "Miss Bloosm"
+TIMEZONE = pytz.timezone("Asia/Kolkata")
 
-OWNER_ID = 5436530930
-OWNER_NAME = "Frx_Shooter"
-OWNER_USERNAME = "@Frx_Shooter"
+MEMORY_FILE = "memory.json"
+MAX_MEMORY = 50   # safe + human-like
 
-client = Groq(api_key=GROQ_API_KEY)
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ================= SETTINGS =================
-bot_settings = {
-    "group_reply": False,
-    "welcome": True
-}
+# ===================== MEMORY =====================
+if not os.path.exists(MEMORY_FILE):
+    with open(MEMORY_FILE, "w") as f:
+        json.dump({}, f)
 
-# ================= MEMORY =================
-user_memory = {}
-def get_memory(uid):
-    if uid not in user_memory:
-        user_memory[uid] = deque(maxlen=30)
-    return user_memory[uid]
+def load_memory():
+    with open(MEMORY_FILE, "r") as f:
+        return json.load(f)
 
-# ================= OWNER =================
-def is_owner(uid):
-    return uid == OWNER_ID
+def save_memory(data):
+    with open(MEMORY_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
-def owner_intent(text):
-    t = text.lower()
-    if "group reply on" in t:
-        return ("group_reply", True)
-    if "group reply off" in t:
-        return ("group_reply", False)
-    if "welcome on" in t:
-        return ("welcome", True)
-    if "welcome off" in t:
-        return ("welcome", False)
-    return None
+def get_user_memory(user_id):
+    data = load_memory()
+    return data.get(str(user_id), {
+        "name": None,
+        "history": [],
+        "blocked": False
+    })
 
-# ================= HELPERS =================
-def clean_reply(text):
-    return re.sub(r"\*[^*]+\*", "", text).strip()
+def update_user_memory(user_id, memory):
+    data = load_memory()
+    data[str(user_id)] = memory
+    save_memory(data)
 
-def now_time():
-    return datetime.now(pytz.timezone("Asia/Kolkata"))
+# ===================== SYSTEM PROMPT =====================
+SYSTEM_PROMPT = """
+You are Miss Bloosm.
 
-def is_greeting(text):
-    return text.lower().strip() in [
-        "hi", "hello", "hey", "good morning", "good evening", "good night"
-    ]
+Personality:
+- Calm
+- Friendly
+- Family-safe
+- Supportive
+- Female identity
+- Short replies by default
+- Warm emojis allowed 🙂🌸
 
-def is_time_q(text):
-    return any(k in text.lower() for k in ["time", "date", "day", "aaj"])
+Rules:
+- Never say you are an AI model
+- Never mention OpenAI or APIs
+- Never give technical/internal info
+- No flirting, only soft warmth
+- Respond like a caring friend
+- If user is sad, comfort first
+- If user says "nothing", reply softly and stop
 
-def is_tomorrow_q(text):
-    return "tomorrow" in text.lower() or "kal" in text.lower()
+Owner:
+- You were developed by Frx_Shooter (Telegram: @Frx_Shooter)
 
-def is_owner_question(text):
-    t = text.lower()
-    keys = [
-        "who made you",
-        "who is your owner",
-        "who developed you",
-        "tumhe kisne banaya",
-        "owner kon",
-        "developer kon"
-    ]
-    return any(k in t for k in keys)
+Memory:
+- Remember user's name if told
+- Use name naturally
+"""
 
-# ================= START =================
+# ===================== HELPERS =====================
+def now_india():
+    return datetime.now(TIMEZONE)
+
+# ===================== COMMANDS =====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"Hello, I’m {BOT_NAME}.\n\n"
-        f"This bot is currently in beta testing.\n"
-        f"Some responses may be inaccurate.\n\n"
-        f"You can start chatting anytime."
+        f"Hey 🙂 I’m {BOT_NAME}.\n"
+        "⚠️ Bot is under beta phase.\n"
+        "Replies may be imperfect sometimes.\n\n"
+        "You can talk freely 🌸"
     )
 
-# ================= WELCOME =================
-async def welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if bot_settings["welcome"]:
-        await update.message.reply_text(
-            "Welcome.\n"
-            "This bot is under beta testing.\n"
-            "Please mention the bot if you need a response."
-        )
-
-# ================= AI BACKGROUND =================
-async def send_ai_reply(update, context, text):
-    try:
-        await update.message.chat.send_action("typing")
-
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        f"You are {BOT_NAME}, a female AI assistant.\n"
-                        f"Reply professionally, short and clear.\n"
-                        f"Use minimal emojis 🙂\n"
-                        f"Never use roleplay actions."
-                    )
-                },
-                {"role": "user", "content": text}
-            ],
-            temperature=0.6,
-            max_tokens=60
-        )
-
-        reply = clean_reply(response.choices[0].message.content)
-        if reply:
-            await update.message.reply_text(reply)
-
-    except Exception:
-        pass
-
-# ================= MAIN =================
-async def reply_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-
+# ===================== MAIN CHAT =====================
+async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text.strip()
 
-    # OWNER SETTINGS
-    if is_owner(user.id):
-        intent = owner_intent(text)
-        if intent:
-            k, v = intent
-            bot_settings[k] = v
-            await update.message.reply_text(f"Setting updated: {k} = {v}")
-            return
+    memory = get_user_memory(user.id)
 
-    # OWNER INFO
-    if is_owner_question(text):
-        await update.message.reply_text(
-            f"I was developed by {OWNER_NAME}.\n"
-            f"Telegram: {OWNER_USERNAME}"
+    # Blocked users
+    if memory.get("blocked"):
+        return
+
+    # Save name
+    if text.lower().startswith("my name is"):
+        name = text.split("my name is", 1)[1].strip()
+        memory["name"] = name
+        update_user_memory(user.id, memory)
+        await update.message.reply_text(f"Nice to meet you, {name} 🙂")
+        return
+
+    # Typing indicator
+    await update.message.chat.send_action(ChatAction.TYPING)
+
+    # Build messages
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    if memory["name"]:
+        messages.append({
+            "role": "system",
+            "content": f"The user's name is {memory['name']}."
+        })
+
+    for h in memory["history"][-MAX_MEMORY:]:
+        messages.append(h)
+
+    messages.append({"role": "user", "content": text})
+
+    # OpenAI call
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            max_tokens=120,
+            temperature=0.7
         )
-        return
+        reply = response.choices[0].message.content.strip()
+    except Exception:
+        reply = "Thoda sa issue aa gaya 😔 thodi der baad try karo."
 
-    # GROUP FLOOD CONTROL
-    if update.message.chat.type in ["group", "supergroup"]:
-        if not bot_settings["group_reply"]:
-            if not (
-                update.message.reply_to_message
-                and update.message.reply_to_message.from_user.is_bot
-            ) and f"@{context.bot.username}" not in text:
-                return
+    # Update memory
+    memory["history"].append({"role": "user", "content": text})
+    memory["history"].append({"role": "assistant", "content": reply})
+    memory["history"] = memory["history"][-MAX_MEMORY:]
+    update_user_memory(user.id, memory)
 
-    # GREETING
-    if is_greeting(text):
-        h = now_time().hour
-        if h < 12:
-            await update.message.reply_text("Good morning ☀️")
-        elif h < 18:
-            await update.message.reply_text("Good afternoon 🌤️")
-        else:
-            await update.message.reply_text("Good evening 🌆")
-        return
+    await update.message.reply_text(reply)
 
-    # TIME / DATE
-    if is_time_q(text):
-        n = now_time()
-        await update.message.reply_text(
-            f"{n.strftime('%A')}\n"
-            f"{n.strftime('%d %B %Y')}\n"
-            f"{n.strftime('%I:%M %p')}"
-        )
-        return
-
-    # TOMORROW
-    if is_tomorrow_q(text):
-        t = now_time() + timedelta(days=1)
-        await update.message.reply_text(
-            f"Tomorrow is {t.strftime('%A')}, {t.strftime('%d %B %Y')}"
-        )
-        return
-
-    # MEMORY
-    get_memory(user.id).append(text)
-
-    # BACKGROUND AI
-    context.application.create_task(
-        send_ai_reply(update, context, text)
-    )
-
-# ================= RUN =================
+# ===================== RUN =====================
 def main():
-    request = HTTPXRequest(
-        connect_timeout=20,
-        read_timeout=20,
-        write_timeout=20,
-        pool_timeout=20
-    )
-
-    app = ApplicationBuilder().token(BOT_TOKEN).request(request).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply_ai))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
-    print("Miss Bloosm running...")
     app.run_polling()
 
 if __name__ == "__main__":
