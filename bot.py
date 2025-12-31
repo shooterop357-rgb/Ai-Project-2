@@ -1,39 +1,44 @@
 import os
 import json
-import random
 from datetime import datetime
 import pytz
+import requests
 
 from telegram import Update
-from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder,
-    ContextTypes,
-    MessageHandler,
     CommandHandler,
+    MessageHandler,
+    ContextTypes,
     filters,
 )
 
 from groq import Groq
 
 # =========================
-# 🔐 ENV
+# ENV VARIABLES
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
-OWNER_ID = 5436530930
-OWNER_NAME = "Frx_Shooter"
+HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")  # INDIAN CALENDAR API
 
 # =========================
-# 🤖 GROQ CLIENT
+# CORE IDENTITY
 # =========================
-groq_client = Groq(api_key=GROQ_API_KEY)
+BOT_NAME = "Miss Bloosm"
+DEVELOPER = "@Frx_Shooter"
+TIMEZONE = pytz.timezone("Asia/Kolkata")
 
 # =========================
-# 🧠 MEMORY
+# GROQ CLIENT
+# =========================
+client = Groq(api_key=GROQ_API_KEY)
+
+# =========================
+# LONG MEMORY (FILE)
 # =========================
 MEMORY_FILE = "memory.json"
+MAX_MEMORY = 200
 
 if not os.path.exists(MEMORY_FILE):
     with open(MEMORY_FILE, "w") as f:
@@ -48,106 +53,130 @@ def save_memory(data):
         json.dump(data, f, indent=2)
 
 # =========================
-# ⏰ IST CONTEXT
+# TIME CONTEXT (IST)
 # =========================
 def ist_context():
-    ist = pytz.timezone("Asia/Kolkata")
-    now = datetime.now(ist)
-    return f"Current IST time: {now.strftime('%I:%M %p')}, Date: {now.strftime('%d %B %Y')}"
+    now = datetime.now(TIMEZONE)
+    return now.strftime("%A, %d %B %Y | %I:%M %p IST")
 
 # =========================
-# 🌸 START
+# INDIAN HOLIDAYS (API)
+# =========================
+def get_indian_holidays():
+    """
+    Uses API Ninjas style API:
+    https://api.api-ninjas.com/v1/holidays?country=IN&year=YYYY
+    """
+    year = datetime.now(TIMEZONE).year
+    url = f"https://api.api-ninjas.com/v1/holidays?country=IN&year={year}"
+    headers = {"X-Api-Key": HOLIDAY_API_KEY}
+
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        data = r.json()
+
+        upcoming = []
+        today = datetime.now(TIMEZONE).date()
+
+        for item in data:
+            d = datetime.strptime(item["date"], "%Y-%m-%d").date()
+            if d >= today:
+                upcoming.append(f"{item['name']} ({d.strftime('%d %b')})")
+
+        return ", ".join(upcoming[:5]) if upcoming else "No upcoming holidays found"
+
+    except Exception:
+        return None  # silent failure
+
+# =========================
+# /START (ONLY FIXED MESSAGE)
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Hello, I’m **Miss Blossom** 🌸\n\n"
-        "Main ek calm, friendly AI companion hoon 🤍\n"
-        "Aapki baat sunne aur support karne ke liye yahan hoon.\n\n"
-        "⚠️ Bot abhi **BETA phase** mein hai,\n"
-        "kabhi-kabhi replies imperfect ho sakte hain.\n\n"
-        "Aap freely baat kar sakte ho 🙂",
-        parse_mode="Markdown"
+    intro = (
+        f"Hello, I’m {BOT_NAME} 🌸\n\n"
+        "I’m a calm, friendly AI designed for natural conversations.\n"
+        "Human Like Replay Feels Emotionas.\n\n"
+        "⚠️ This bot is currently in beta.\n"
+        "Some replies may not always be perfect."
     )
+    await update.message.reply_text(intro)
 
 # =========================
-# 💬 CHAT (PURE AI)
+# MAIN CHAT (PURE AI ONLY)
 # =========================
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    chat = update.effective_chat
-    text = update.message.text.strip()
+    if not update.message or not update.message.text:
+        return
 
-    # 🚫 GROUP FLOOD CONTROL
-    if chat.type in ["group", "supergroup"]:
-        if context.bot.username.lower() not in text.lower():
-            return
+    user = update.effective_user
+    user_text = update.message.text.strip()
 
     memory = load_memory()
     uid = str(user.id)
 
     if uid not in memory:
-        memory[uid] = {
-            "name": user.first_name,
-            "messages": []
-        }
+        memory[uid] = []
 
-    memory[uid]["messages"].append(text)
-    memory[uid]["messages"] = memory[uid]["messages"][-30:]
+    # Save user message
+    memory[uid].append({"role": "user", "content": user_text})
+    memory[uid] = memory[uid][-MAX_MEMORY:]
     save_memory(memory)
 
-    await update.message.chat.send_action(ChatAction.TYPING)
+    # Calendar context from API
+    holidays_context = get_indian_holidays()
 
-    # =========================
-    # 🤖 GROQ AI ONLY
-    # =========================
+    # SYSTEM PROMPT (ONLY MEMORY & CONTEXT)
+    system_prompt = (
+        f"You are {BOT_NAME}, a female AI assistant.\n"
+        f"Developer: {DEVELOPER}.\n\n"
+        "Purpose:\n"
+        "- Calm, friendly, professional conversation\n"
+        "- Human-like tone\n"
+        "- Light emojis allowed naturally\n\n"
+        "Rules:\n"
+        "- No automatic or scripted replies\n"
+        "- Never mention errors or technical issues\n"
+        "- If unsure, respond naturally like a human\n\n"
+        f"Current time (IST): {ist_context()}\n"
+    )
+
+    if holidays_context:
+        system_prompt += f"Upcoming Indian holidays: {holidays_context}\n"
+
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(memory[uid])
+
     try:
-        completion = groq_client.chat.completions.create(
-            model="llama3-8b-8192",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are Miss Blossom 🌸, a female AI.\n"
-                        "Personality: calm, friendly, emotionally supportive.\n"
-                        "Language: Hinglish only.\n"
-                        "Tone: like a caring friend, not robotic.\n"
-                        "Use only emotion or hand emojis 🤍🙂🙏😊.\n"
-                        "Keep replies short and human.\n\n"
-                        f"Your owner is {OWNER_NAME}.\n"
-                        f"{ist_context()}\n\n"
-                        "Never say you are slow, broken, or technical.\n"
-                        "If you don't know something, reply gently like a human."
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": text
-                }
-            ],
-            temperature=0.7,
-            max_tokens=150
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=messages,
+            temperature=0.65,
+            max_tokens=200,
         )
 
-        reply = completion.choices[0].message.content.strip()
+        reply = response.choices[0].message.content.strip()
+
+        # Save assistant reply
+        memory[uid].append({"role": "assistant", "content": reply})
+        memory[uid] = memory[uid][-MAX_MEMORY:]
+        save_memory(memory)
+
         await update.message.reply_text(reply)
 
     except Exception:
-        # 🧠 AI-LIKE FALLBACK (NOT PYTHON STYLE)
-        fallback = random.choice([
-            "🙂 Lagta hai thoda sa ruk gayi thi… ab bolo na.",
-            "🤍 Ek second ke liye connection loose ho gaya tha, phir se bolo.",
-            "🙏 Main yahin hoon, bas thoda sa delay hua."
-        ])
-        await update.message.reply_text(fallback)
+        # Bot stays silent on any failure
+        return
 
 # =========================
-# 🚀 MAIN
+# RUN BOT
 # =========================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-    print("Miss Blossom 🌸 running (Pure Groq AI)")
+
+    print("Miss Bloosm is running 🌸")
     app.run_polling()
 
 if __name__ == "__main__":
