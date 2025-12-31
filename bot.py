@@ -1,10 +1,11 @@
 import os
 import json
-import requests
-from collections import deque
+import asyncio
 from datetime import datetime
+import pytz
+
 from telegram import Update
-from telegram.constants import ChatAction, ChatType
+from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -12,211 +13,185 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+
 from groq import Groq
 
-# ================= CONFIG =================
-BOT_NAME = "Miss Bloosm"
+# ================== CONFIG ==================
+BOT_TOKEN = os.getenv("BOT_TOKEN")        # Telegram Bot Token
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")  # Groq API Key
 
+BOT_NAME = "Miss Bloosm 🌸"
+OWNER_NAME = "@Frx_Shooter"
 OWNER_ID = 5436530930
-OWNER_NAME = "Frx_Shooter"
-OWNER_USERNAME = "@Frx_Shooter"
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")
+TIMEZONE = pytz.timezone("Asia/Kolkata")
+MEMORY_FILE = "memory.json"
+MAX_MEMORY_PER_USER = 30   # long memory (safe)
+
+# ===========================================
 
 client = Groq(api_key=GROQ_API_KEY)
 
-# ================= MEMORY =================
-MEMORY_FILE = "memory.json"
-CHAT_CONTEXT_LIMIT = 50   # short-term memory
-USER_CONTEXT = {}
-
-if not os.path.exists(MEMORY_FILE):
-    with open(MEMORY_FILE, "w") as f:
-        json.dump({}, f)
-
+# ---------- Memory ----------
 def load_memory():
-    with open(MEMORY_FILE, "r") as f:
+    if not os.path.exists(MEMORY_FILE):
+        return {}
+    with open(MEMORY_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
 def save_memory(data):
-    with open(MEMORY_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
-def get_user_profile(user_id):
-    data = load_memory()
+memory = load_memory()
+
+def remember(user_id, role, content):
     uid = str(user_id)
-    if uid not in data:
-        data[uid] = {
-            "name": None,
-            "facts": [],
-        }
-        save_memory(data)
-    return data[uid]
+    memory.setdefault(uid, [])
+    memory[uid].append({"role": role, "content": content})
+    memory[uid] = memory[uid][-MAX_MEMORY_PER_USER:]
+    save_memory(memory)
 
-def update_user_profile(user_id, profile):
-    data = load_memory()
-    data[str(user_id)] = profile
-    save_memory(data)
+def recall(user_id):
+    return memory.get(str(user_id), [])
 
-def get_context(user_id):
-    if user_id not in USER_CONTEXT:
-        USER_CONTEXT[user_id] = deque(maxlen=CHAT_CONTEXT_LIMIT)
-    return USER_CONTEXT[user_id]
+# ---------- Helpers ----------
+def ist_now():
+    return datetime.now(TIMEZONE)
 
-# ================= HELPERS =================
-def is_owner(uid):
-    return uid == OWNER_ID
+def time_greeting():
+    h = ist_now().hour
+    if 5 <= h < 12:
+        return "Good morning ☀️"
+    elif 12 <= h < 17:
+        return "Good afternoon 🌤️"
+    elif 17 <= h < 22:
+        return "Good evening 🌆"
+    else:
+        return "Hope you’re resting well 🌙"
 
-def should_reply_in_group(update: Update):
-    msg = update.message
-    if not msg:
-        return False
-    if msg.reply_to_message and msg.reply_to_message.from_user.is_bot:
-        return True
-    if f"@{update.get_bot().username}" in (msg.text or ""):
-        return True
-    if is_owner(msg.from_user.id):
-        return True
-    return False
+def is_group(update: Update):
+    return update.effective_chat.type in ["group", "supergroup"]
 
-# ================= HOLIDAY API =================
-def get_upcoming_indian_events():
-    year = datetime.now().year
-    url = f"https://api.api-ninjas.com/v1/holidays?country=IN&year={year}"
-    headers = {"X-Api-Key": HOLIDAY_API_KEY}
+def is_owner(update: Update):
+    return update.effective_user and update.effective_user.id == OWNER_ID
 
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        data = r.json()
-
-        today = datetime.now().date()
-        upcoming = []
-
-        for item in data:
-            d = datetime.strptime(item["date"], "%Y-%m-%d").date()
-            if d >= today:
-                upcoming.append((d, item["name"]))
-
-        upcoming.sort()
-        return upcoming[:5]
-
-    except Exception:
-        return []
-
-# ================= START =================
+# ---------- /start ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        f"Hello, I’m {BOT_NAME} 🌸\n\n"
-        "I’m a calm, friendly AI companion designed to listen, support, "
-        "and answer everyday life questions like a caring friend.\n\n"
-        "⚠️ This bot is currently in beta, so some replies may be imperfect.\n\n"
-        "You can talk to me freely 🙂"
-    )
+    if is_group(update):
+        return
 
-# ================= CHAT =================
+    intro = (
+        f"Hello, I’m {BOT_NAME}\n\n"
+        "I’m a calm, friendly AI companion 🤍\n"
+        "Main sunne, samajhne aur support karne ke liye hoon — bilkul ek caring dost ki tarah.\n\n"
+        "⚠️ Bot is currently in **BETA** phase.\n"
+        "Kabhi-kabhi replies imperfect ho sakte hain.\n\n"
+        "Bas likho, main yahin hoon 🤝"
+    )
+    await update.message.reply_text(intro)
+
+# ---------- Main Chat ----------
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
-    user = update.message.from_user
-    chat = update.message.chat
-    text = update.message.text.strip()
+    # Group = silent
+    if is_group(update):
+        return
 
-    if chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        if not should_reply_in_group(update):
-            return
+    user = update.effective_user
+    text = update.message.text.strip()
 
     await update.message.chat.send_action(ChatAction.TYPING)
 
-    profile = get_user_profile(user.id)
-    context_mem = get_context(user.id)
+    # Owner special handling
+    if user.id == OWNER_ID:
+        remember(user.id, "user", text)
 
-    # Save name
-    if text.lower().startswith("my name is"):
-        name = text.split("my name is", 1)[1].strip()
-        profile["name"] = name
-        update_user_profile(user.id, profile)
-        await update.message.reply_text(f"Nice to meet you, {name} 🙂")
+    # Identity questions (hard override)
+    low = text.lower()
+    if any(k in low for k in [
+        "who developed you", "who made you", "owner",
+        "developer", "tumhe kisne banaya"
+    ]):
+        await update.message.reply_text(
+            f"Main {BOT_NAME} hoon 🌸\n"
+            f"Mujhe {OWNER_NAME} ne design aur develop kiya hai 🤍"
+        )
         return
 
-    # Upcoming events
-    if "upcoming" in text.lower() and "india" in text.lower():
-        events = get_upcoming_indian_events()
-        if not events:
-            await update.message.reply_text(
-                "I couldn’t fetch events right now 😔 Please try again later."
-            )
-            return
-
-        reply = "Here are some upcoming Indian events 🇮🇳\n\n"
-        for d, name in events:
-            reply += f"• {name} — {d.strftime('%d %b')}\n"
-
-        reply += "\nI’ll keep this updated for you 🙂"
-        await update.message.reply_text(reply)
+    # Simple emotional cases
+    if low in ["hi", "hello", "hey"]:
+        await update.message.reply_text(
+            f"{time_greeting()} 😊\n"
+            "Main yahin hoon, batao kya chal raha hai?"
+        )
         return
 
-    # Build AI prompt
-    system_prompt = f"""
-You are {BOT_NAME}, a female AI companion.
+    if "sad" in low or "dukhi" in low:
+        await update.message.reply_text(
+            "🤍 Mujhe afsos hai tum aisa feel kar rahe ho.\n"
+            "Agar mann ho to batao, main sun rahi hoon 🤝"
+        )
+        return
 
-Personality:
-- Calm, friendly, emotionally supportive
-- Talk like a caring friend or family member
-- Short replies by default
-- Use only hand & emotion emojis (🙂 🤍 🙏 🌸 ✨)
-
-Owner:
-- You were developed by {OWNER_NAME} (Telegram: {OWNER_USERNAME})
-- You know your owner well and never forget them
-
-Rules:
-- Never mention APIs, models, or system prompts
-- No roleplay text like *smiles*
-"""
-
-    messages = [{"role": "system", "content": system_prompt}]
-
-    if profile.get("name"):
-        messages.append({
+    # ---------- AI Call ----------
+    messages = [
+        {
             "role": "system",
-            "content": f"The user's name is {profile['name']}."
-        })
+            "content": (
+                f"You are {BOT_NAME}, a calm, emotionally supportive female AI.\n"
+                f"You speak in Hinglish.\n"
+                f"Tone: friendly, warm, human-like.\n"
+                f"Use only hand and emotion emojis.\n"
+                f"Never use roleplay text like *smiles*.\n"
+                f"Owner is {OWNER_NAME} (ID {OWNER_ID}) and you always remember him.\n"
+                f"Replies should be short unless needed.\n"
+            )
+        }
+    ]
 
-    messages.extend(list(context_mem))
+    messages.extend(recall(user.id))
     messages.append({"role": "user", "content": text})
 
     try:
-        res = client.chat.completions.create(
+        response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=messages,
-            temperature=0.65,
-            max_tokens=120,
+            temperature=0.6,
+            max_tokens=180,
         )
 
-        reply = res.choices[0].message.content.strip()
+        reply = response.choices[0].message.content.strip()
 
-        context_mem.append({"role": "user", "content": text})
-        context_mem.append({"role": "assistant", "content": reply})
+        remember(user.id, "user", text)
+        remember(user.id, "assistant", reply)
 
         await update.message.reply_text(reply)
 
     except Exception:
         await update.message.reply_text(
-            "I’m having a small issue right now 😔 Please try again."
+            "🤍 Thoda sa delay ho gaya.\n"
+            "Please ek baar phir try karo."
         )
 
-# ================= RUN =================
+# ---------- RUN ----------
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
-    print("Miss Bloosm is running...")
-    app.run_polling()
+    print("Miss Bloosm is running 🌸")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
