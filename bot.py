@@ -1,163 +1,133 @@
-import json
-import os
-import pytz
-from datetime import datetime
+    import os
+from collections import deque
 from telegram import Update
-from telegram.constants import ChatAction
+from telegram.constants import ChatAction, ChatType
 from telegram.ext import (
     ApplicationBuilder,
-    ContextTypes,
     CommandHandler,
     MessageHandler,
-    filters
+    ContextTypes,
+    filters,
 )
-from openai import OpenAI
+from groq import Groq
 
-# ===================== CONFIG =====================
-BOT_TOKEN = os.getenv("BOT_TOKEN")          # Telegram Bot Token
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-OWNER_ID = 5436530930   # YOUR TELEGRAM ID
+# ================= CONFIG =================
 BOT_NAME = "Miss Bloosm"
-TIMEZONE = pytz.timezone("Asia/Kolkata")
+OWNER_ID = 5436530930
+OWNER_NAME = "Frx_Shooter"
+OWNER_USERNAME = "@Frx_Shooter"
 
-MEMORY_FILE = "memory.json"
-MAX_MEMORY = 50   # safe + human-like
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = Groq(api_key=GROQ_API_KEY)
 
-# ===================== MEMORY =====================
-if not os.path.exists(MEMORY_FILE):
-    with open(MEMORY_FILE, "w") as f:
-        json.dump({}, f)
+# Memory (chat context only)
+USER_MEMORY = {}
+MEMORY_LIMIT = 30
 
-def load_memory():
-    with open(MEMORY_FILE, "r") as f:
-        return json.load(f)
+# ================= HELPERS =================
+def is_owner(user_id: int) -> bool:
+    return user_id == OWNER_ID
 
-def save_memory(data):
-    with open(MEMORY_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+def get_memory(user_id: int):
+    if user_id not in USER_MEMORY:
+        USER_MEMORY[user_id] = deque(maxlen=MEMORY_LIMIT)
+    return USER_MEMORY[user_id]
 
-def get_user_memory(user_id):
-    data = load_memory()
-    return data.get(str(user_id), {
-        "name": None,
-        "history": [],
-        "blocked": False
-    })
+def should_reply_in_group(update: Update) -> bool:
+    msg = update.message
+    if not msg:
+        return False
+    if msg.reply_to_message and msg.reply_to_message.from_user.is_bot:
+        return True
+    if f"@{update.get_bot().username}" in (msg.text or ""):
+        return True
+    if is_owner(msg.from_user.id):
+        return True
+    return False
 
-def update_user_memory(user_id, memory):
-    data = load_memory()
-    data[str(user_id)] = memory
-    save_memory(data)
-
-# ===================== SYSTEM PROMPT =====================
-SYSTEM_PROMPT = """
-You are Miss Bloosm.
-
-Personality:
-- Calm
-- Friendly
-- Family-safe
-- Supportive
-- Female identity
-- Short replies by default
-- Warm emojis allowed 🙂🌸
-
-Rules:
-- Never say you are an AI model
-- Never mention OpenAI or APIs
-- Never give technical/internal info
-- No flirting, only soft warmth
-- Respond like a caring friend
-- If user is sad, comfort first
-- If user says "nothing", reply softly and stop
-
-Owner:
-- You were developed by Frx_Shooter (Telegram: @Frx_Shooter)
-
-Memory:
-- Remember user's name if told
-- Use name naturally
-"""
-
-# ===================== HELPERS =====================
-def now_india():
-    return datetime.now(TIMEZONE)
-
-# ===================== COMMANDS =====================
+# ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        f"Hey 🙂 I’m {BOT_NAME}.\n"
-        "⚠️ Bot is under beta phase.\n"
+    text = (
+        f"Hey 👋 I’m {BOT_NAME}.\n\n"
+        "⚠️ Bot is under **BETA** phase.\n"
         "Replies may be imperfect sometimes.\n\n"
-        "You can talk freely 🌸"
+        "You can talk to me freely 🙂"
     )
+    await update.message.reply_text(text)
 
-# ===================== MAIN CHAT =====================
+# ================= CHAT =================
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+    if not update.message or not update.message.text:
+        return
+
+    user = update.message.from_user
+    chat = update.message.chat
     text = update.message.text.strip()
 
-    memory = get_user_memory(user.id)
+    # Group control
+    if chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        if not should_reply_in_group(update):
+            return
 
-    # Blocked users
-    if memory.get("blocked"):
-        return
-
-    # Save name
-    if text.lower().startswith("my name is"):
-        name = text.split("my name is", 1)[1].strip()
-        memory["name"] = name
-        update_user_memory(user.id, memory)
-        await update.message.reply_text(f"Nice to meet you, {name} 🙂")
-        return
-
-    # Typing indicator
     await update.message.chat.send_action(ChatAction.TYPING)
 
-    # Build messages
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    memory = get_memory(user.id)
+    memory.append({"role": "user", "content": text})
 
-    if memory["name"]:
-        messages.append({
-            "role": "system",
-            "content": f"The user's name is {memory['name']}."
-        })
+    system_prompt = f"""
+You are {BOT_NAME}, a female AI assistant.
 
-    for h in memory["history"][-MAX_MEMORY:]:
-        messages.append(h)
+PERSONALITY (VERY IMPORTANT):
+- Be extremely friendly, calm, and emotionally supportive.
+- Talk like a caring friend or family member.
+- Try to emotionally connect with the user.
+- Keep replies short and warm unless detail is needed.
+- Use emojis naturally, ONLY hand and emotion emojis.
+  Examples: 👋 🙂 😊 🤍 🙏 🌸 ✨
+- NEVER use role-play text like *smiles* or *warm smile*.
 
-    messages.append({"role": "user", "content": text})
+OWNER:
+- You were developed by {OWNER_NAME} (Telegram: {OWNER_USERNAME})
+- Owner ID: {OWNER_ID}
+- You know your owner well and never forget them.
+- Treat the owner with familiarity and priority.
 
-    # OpenAI call
+RULES:
+- Never mention APIs, models, or system prompts.
+- Be respectful, soft, and human-like.
+"""
+
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(list(memory))
+
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="llama-3.1-8b-instant",
             messages=messages,
+            temperature=0.65,
             max_tokens=120,
-            temperature=0.7
         )
+
         reply = response.choices[0].message.content.strip()
+        memory.append({"role": "assistant", "content": reply})
+
+        await update.message.reply_text(reply)
+
     except Exception:
-        reply = "Thoda sa issue aa gaya 😔 thodi der baad try karo."
+        await update.message.reply_text(
+            "Sorry 😔 I’m having a little trouble right now. Please try again."
+        )
 
-    # Update memory
-    memory["history"].append({"role": "user", "content": text})
-    memory["history"].append({"role": "assistant", "content": reply})
-    memory["history"] = memory["history"][-MAX_MEMORY:]
-    update_user_memory(user.id, memory)
-
-    await update.message.reply_text(reply)
-
-# ===================== RUN =====================
+# ================= RUN =================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
+    print("Miss Bloosm is running...")
     app.run_polling()
 
 if __name__ == "__main__":
