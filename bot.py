@@ -2,6 +2,7 @@ import os
 import json
 from datetime import datetime
 import pytz
+import requests
 
 from telegram import Update
 from telegram.ext import (
@@ -11,37 +12,33 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from telegram.constants import ChatAction
 
 from groq import Groq
-import google.generativeai as genai
 
 # =========================
-# CONFIG
+# ENV VARIABLES
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")  # INDIAN CALENDAR API
 
+# =========================
+# CORE IDENTITY
+# =========================
 BOT_NAME = "Miss Bloosm"
-BOT_AGE = "21"
-DEVELOPER_USERNAME = "@Frx_Shooter"
-OWNER_ID = 5436530930
-
+DEVELOPER = "@Frx_Shooter"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
 # =========================
-# AI CLIENTS
+# GROQ CLIENT
 # =========================
-groq_client = Groq(api_key=GROQ_API_KEY)
-genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+client = Groq(api_key=GROQ_API_KEY)
 
 # =========================
-# MEMORY
+# LONG MEMORY (FILE)
 # =========================
 MEMORY_FILE = "memory.json"
-MAX_MEMORY = 120
+MAX_MEMORY = 200
 
 if not os.path.exists(MEMORY_FILE):
     with open(MEMORY_FILE, "w") as f:
@@ -56,231 +53,119 @@ def save_memory(data):
         json.dump(data, f, indent=2)
 
 # =========================
-# HELPERS
+# TIME CONTEXT (IST)
 # =========================
-def ist_now():
-    return datetime.now(TIMEZONE)
-
-def detect_mode_and_mood(text: str):
-    t = text.lower()
-
-    sexual = ["sex", "nude", "kiss", "bed", "hot"]
-    sad = ["sad", "alone", "cry", "broken", "depressed"]
-    angry = ["angry", "gussa", "hate"]
-    happy = ["happy", "lol", "haha", "excited"]
-
-    if any(w in t for w in sexual):
-        mood = "sexual"
-    elif any(w in t for w in sad):
-        mood = "sad"
-    elif any(w in t for w in angry):
-        mood = "angry"
-    elif any(w in t for w in happy):
-        mood = "happy"
-    else:
-        mood = "cool"
-
-    hour = ist_now().hour
-    if mood == "sad":
-        mode = "support"
-    elif hour >= 22 or hour <= 5:
-        mode = "night"
-    else:
-        mode = "calm"
-
-    return mood, mode
+def ist_context():
+    now = datetime.now(TIMEZONE)
+    return now.strftime("%A, %d %B %Y | %I:%M %p IST")
 
 # =========================
-# CONSTANT LISTS
+# INDIAN HOLIDAYS (API)
 # =========================
-DISRESPECT_WORDS = [
-    "randi", "pagal", "chutiya", "mc", "bc",
-    "beta", "bacha", "idiot"
-]
+def get_indian_holidays():
+    year = datetime.now(TIMEZONE).year
+    url = f"https://api.api-ninjas.com/v1/holidays?country=IN&year={year}"
+    headers = {"X-Api-Key": HOLIDAY_API_KEY}
 
-APOLOGY_WORDS = [
-    "sorry", "maaf", "galti ho gayi",
-    "my mistake", "apologies", "sry"
-]
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        data = r.json()
 
-FAKE_APOLOGY_HINTS = [
-    "but", "lekin", "par", "still"
-]
+        upcoming = []
+        today = datetime.now(TIMEZONE).date()
+
+        for item in data:
+            d = datetime.strptime(item["date"], "%Y-%m-%d").date()
+            if d >= today:
+                upcoming.append(f"{item['name']} ({d.strftime('%d %b')})")
+
+        return ", ".join(upcoming[:5]) if upcoming else None
+
+    except Exception:
+        return None
 
 # =========================
-# START
+# /START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Hello, I’m Miss Bloosm 🌸\n\n"
+    intro = (
+        f"Hello, I’m {BOT_NAME} 🌸\n\n"
         "I’m a calm, friendly AI designed for natural conversations.\n"
         "Human Like Replay Feels Emotionas.\n\n"
         "⚠️ This bot is currently in beta.\n"
         "Some replies may not always be perfect."
     )
+    await update.message.reply_text(intro)
 
 # =========================
-# CHAT
+# MAIN CHAT
 # =========================
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
-    user_id = update.effective_user.id
-    raw = update.message.text.strip()
-    text = raw.lower()
-    uid = str(user_id)
+    user = update.effective_user
+    user_text = update.message.text.strip()
 
     memory = load_memory()
+    uid = str(user.id)
+
     if uid not in memory:
-        memory[uid] = {"chat": [], "strikes": 0}
+        memory[uid] = []
 
-    # =========================
-    # OWNER VERIFY
-    # =========================
-    if "developer" in text:
-        if user_id == OWNER_ID:
-            await update.message.reply_text(
-                f"😌 Haan, mujhe pata hai.\nAap hi mere creator ho {DEVELOPER_USERNAME} 🌸"
-            )
-        else:
-            await update.message.reply_text(
-                f"😄 Mujhe to sirf itna pata hai ki mujhe {DEVELOPER_USERNAME} ne build kiya hai 🌸"
-            )
-        return
-
-    if "age" in text or "umar" in text:
-        await update.message.reply_text("Main 21 saal ki hoon 🌸")
-        return
-
-    # =========================
-    # APOLOGY HANDLING
-    # =========================
-    if any(w in text for w in APOLOGY_WORDS):
-        # fake apology check
-        if any(h in text for h in FAKE_APOLOGY_HINTS):
-            await update.message.reply_text(
-                "🙂 Theek hai, par apology ke saath clarity bhi zaroori hoti hai.\nChalo araam se baat karte hain."
-            )
-            return
-
-        # genuine apology → reset strikes + soft tone
-        if memory[uid]["strikes"] > 0:
-            memory[uid]["strikes"] = 0
-            save_memory(memory)
-            await update.message.reply_text(
-                "Theek hai 😌\nChalo fresh start karte hain."
-            )
-            return
-
-    # =========================
-    # 3-STRIKE DISRESPECT SYSTEM
-    # =========================
-    if any(w in text for w in DISRESPECT_WORDS):
-        memory[uid]["strikes"] += 1
-        strikes = memory[uid]["strikes"]
-        save_memory(memory)
-
-        if strikes == 1:
-            await update.message.reply_text(
-                "Main respect se baat karti hoon.\nAaraam se baat karte hain 🙂"
-            )
-            return
-
-        if strikes == 2:
-            await update.message.reply_text(
-                "Is tarah ki language theek nahi.\nPlease tone theek rakho."
-            )
-            return
-
-        if strikes >= 3:
-            return  # silent ignore
-
-    # =========================
-    # MOOD / MODE
-    # =========================
-    mood, mode = detect_mode_and_mood(text)
-
-    if mood == "sexual":
-        await update.message.reply_text(
-            "😳 Arre… itna aage nahi.\nMain thodi classy hoon 😌"
-        )
-        return
-
-    # =========================
-    # MEMORY CHAT
-    # =========================
-    memory[uid]["chat"].append({"role": "user", "content": raw})
-    memory[uid]["chat"] = memory[uid]["chat"][-MAX_MEMORY:]
+    memory[uid].append({"role": "user", "content": user_text})
+    memory[uid] = memory[uid][-MAX_MEMORY:]
     save_memory(memory)
 
-    # =========================
-    # SYSTEM PROMPT (FINAL)
-    # =========================
-    system_prompt = f"""
-You are {BOT_NAME} 🌸, a 21-year-old girl.
+    holidays_context = get_indian_holidays()
 
-You are kind, intelligent, emotionally mature, and self-respecting.
-You understand people and adapt without losing dignity.
+    system_prompt = (
+        f"You are {BOT_NAME}, a female AI assistant.\n"
+        f"Developer: {DEVELOPER}.\n\n"
+        "Purpose:\n"
+        "- Calm, friendly, professional conversation\n"
+        "- Human-like tone\n"
+        "- Light emojis allowed naturally\n\n"
+        "Rules:\n"
+        "- No automatic or scripted replies\n"
+        "- Never mention errors or technical issues\n"
+        "- If unsure, respond naturally like a human\n\n"
+        f"Current time (IST): {ist_context()}\n"
+    )
 
-MODE: {mode.upper()}
-
-Mode behavior:
-- night → soft, warm, comforting
-- calm → balanced, gentle, logical
-- support → caring, listening, guiding
-
-Core rules:
-- Never mirror disrespect
-- Never over-apologize
-- Set boundaries once, calmly
-- Forgive genuine apologies and soften tone
-- Detect fake apologies and stay neutral
-
-Style:
-- Hinglish
-- Short, meaningful replies
-- Soft emojis 😊😌🌸
-- Never dramatic, never robotic
-
-Strict:
-- Never mention AI, API, system, backend
-"""
+    if holidays_context:
+        system_prompt += f"Upcoming Indian holidays: {holidays_context}\n"
 
     messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(memory[uid]["chat"])
+    messages.extend(memory[uid])
 
     try:
-        await update.message.chat.send_action(ChatAction.TYPING)
-        res = groq_client.chat.completions.create(
+        response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=messages,
-            temperature=0.6,
-            max_tokens=180,
+            temperature=0.65,
+            max_tokens=200,
         )
-        reply = res.choices[0].message.content.strip()
+
+        reply = response.choices[0].message.content.strip()
+
+        memory[uid].append({"role": "assistant", "content": reply})
+        memory[uid] = memory[uid][-MAX_MEMORY:]
+        save_memory(memory)
+
+        await update.message.reply_text(reply)
+
     except Exception:
-        try:
-            reply = gemini_model.generate_content(
-                system_prompt + "\nUser: " + raw
-            ).text.strip()
-        except Exception:
-            return
-
-    memory[uid]["chat"].append({"role": "assistant", "content": reply})
-    memory[uid]["chat"] = memory[uid]["chat"][-MAX_MEMORY:]
-    save_memory(memory)
-
-    await update.message.reply_text(reply)
+        return
 
 # =========================
-# RUN
+# RUN BOT
 # =========================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-    print("Miss Bloosm running 🌸")
+    print("Miss Bloosm is running 🌸")
     app.run_polling()
 
 if __name__ == "__main__":
