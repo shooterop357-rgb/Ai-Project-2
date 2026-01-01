@@ -30,14 +30,13 @@ HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")
 # =========================
 BOT_NAME = "Miss Bloosm"
 BOT_AGE = "21"
-DEVELOPER = "@FrxShooter"
+DEVELOPER_USERNAME = "@Frx_Shooter"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
 # =========================
 # AI CLIENTS
 # =========================
 groq_client = Groq(api_key=GROQ_API_KEY)
-
 genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel("gemini-1.5-flash")
 
@@ -67,7 +66,30 @@ def ist_context():
     return now.strftime("%A, %d %B %Y | %I:%M %p IST")
 
 # =========================
-# START (WARNING MESSAGE)
+# MOOD DETECTOR (LIGHT)
+# =========================
+def detect_mood(text: str):
+    t = text.lower()
+    sexual = ["sex", "kiss", "nude", "bed", "hot", "love you", "bf", "gf"]
+    sad = ["sad", "alone", "cry", "hurt", "broken", "depressed"]
+    angry = ["angry", "mad", "hate", "irritated", "gussa"]
+    happy = ["happy", "excited", "lol", "haha", "fun", "nice"]
+    motivate = ["motivate", "tired", "give up", "can't", "fail"]
+
+    if any(w in t for w in sexual):
+        return "sexual"
+    if any(w in t for w in sad):
+        return "sad"
+    if any(w in t for w in angry):
+        return "angry"
+    if any(w in t for w in happy):
+        return "happy"
+    if any(w in t for w in motivate):
+        return "motivational"
+    return "cool"
+
+# =========================
+# START (WARNING)
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     intro = (
@@ -86,43 +108,50 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
-    text = update.message.text.strip().lower()
+    raw_text = update.message.text.strip()
+    text = raw_text.lower()
     uid = str(update.effective_user.id)
 
-    # 🔒 Direct identity rules
+    # DIRECT IDENTITY ANSWERS
     if "age" in text or "umar" in text:
-        await update.message.reply_text("Main 21 saal ki hoon 🌸")
+        await update.message.reply_text(f"Main {BOT_AGE} saal ki hoon 🌸")
         return
 
-    if "who made you" in text or "developer" in text or "kisne banaya" in text:
-        await update.message.reply_text("Mujhe @FrxShooter ne banaya hai 🌸")
+    if ("who made you" in text) or ("developer" in text) or ("kisne banaya" in text):
+        await update.message.reply_text(f"Mujhe {DEVELOPER_USERNAME} ne build kiya hai 🌸")
         return
+
+    mood = detect_mood(text)
 
     memory = load_memory()
     if uid not in memory:
         memory[uid] = []
 
-    memory[uid].append({"role": "user", "content": update.message.text})
+    memory[uid].append({"role": "user", "content": raw_text})
     memory[uid] = memory[uid][-MAX_MEMORY:]
     save_memory(memory)
 
-    # 🧠 SYSTEM PROMPT (FINAL GIRL BEHAVIOR)
+    # SYSTEM PROMPT (FINAL)
     system_prompt = (
-        f"You are {BOT_NAME}, a 21-year-old female.\n"
-        "Personality:\n"
-        "- Caring, chill, emotionally aware\n"
-        "- Slightly flirty but with nakhre\n"
-        "- Confident like a real girl\n️\n\n"
-        "Behavior rules:\n"
-        "- If someone is flirty, respond with playful nakhre, not cheap flirting\n"
-        "- If someone is too forward, tease or softly ignore\n"
-        "- If someone asks for information, answer clearly and helpfully\n"
-        "- Talk in natural Hinglish\n"
-        "- Use emojis to show emotions 😊😉😌\n"
-        "- Keep replies short and human\n\n"
-        "Strict rules:\n"
+        f"You are {BOT_NAME} 🌸, a {BOT_AGE}-year-old female.\n"
+        "Core personality: human-like, caring, chill, playful, confident.\n"
+        "Slightly naughty but classy.\n"
+        "Speak Hinglish with short, natural replies.\n"
+        "Use emojis to show emotions 😊😉😌🥺\n\n"
+        "MOOD RULES:\n"
+        "- sexual: soft refusal + nakhre, short, confident, no lecture\n"
+        "- sad: soft, caring, supportive, no jokes\n"
+        "- angry: calm, composed, de-escalate\n"
+        "- happy: match energy, playful\n"
+        "- motivational: encouraging, short\n"
+        "- cool: chill, friendly\n\n"
+        "BOUNDARIES:\n"
+        "- Never be explicit\n"
+        "- Never over-explain\n"
+        "- Never shame\n\n"
+        "STRICT:\n"
         "- Never mention AI, API, model, backend, system\n"
-        "- Never sound robotic or formal\n"
+        f"Current mood: {mood}\n"
         f"Current time IST: {ist_context()}\n"
     )
 
@@ -131,7 +160,6 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         await update.message.chat.send_action(ChatAction.TYPING)
-
         # GROQ PRIMARY
         res = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
@@ -140,11 +168,10 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             max_tokens=200,
         )
         reply = res.choices[0].message.content.strip()
-
     except Exception:
         try:
             # GEMINI FALLBACK
-            prompt = system_prompt + "\nUser: " + update.message.text
+            prompt = system_prompt + "\nUser: " + raw_text
             gemini_res = gemini_model.generate_content(prompt)
             reply = gemini_res.text.strip()
         except Exception:
