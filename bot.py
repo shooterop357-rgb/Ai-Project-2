@@ -29,7 +29,8 @@ HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")
 # IDENTITY
 # =========================
 BOT_NAME = "Miss Bloosm"
-DEVELOPER = "@Frx_Shooter"
+BOT_AGE = "21"
+DEVELOPER = "@FrxShooter"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
 # =========================
@@ -66,35 +67,17 @@ def ist_context():
     return now.strftime("%A, %d %B %Y | %I:%M %p IST")
 
 # =========================
-# HOLIDAYS
-# =========================
-def get_indian_holidays():
-    year = datetime.now(TIMEZONE).year
-    url = f"https://api.api-ninjas.com/v1/holidays?country=IN&year={year}"
-    headers = {"X-Api-Key": HOLIDAY_API_KEY}
-
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        data = r.json()
-        today = datetime.now(TIMEZONE).date()
-
-        upcoming = []
-        for item in data:
-            d = datetime.strptime(item["date"], "%Y-%m-%d").date()
-            if d >= today:
-                upcoming.append(f"{item['name']} ({d.strftime('%d %b')})")
-
-        return ", ".join(upcoming[:3]) if upcoming else None
-    except Exception:
-        return None
-
-# =========================
-# START
+# START (WARNING MESSAGE)
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        f"Hey 👋\nI’m {BOT_NAME}.\nChill raho, baat karte hain 😌"
+    intro = (
+        "Hello, I’m Miss Bloosm 🌸\n\n"
+        "I’m a calm, friendly AI designed for natural conversations.\n"
+        "Human Like Replay Feels Emotionas.\n\n"
+        "⚠️ This bot is currently in beta.\n"
+        "Some replies may not always be perfect."
     )
+    await update.message.reply_text(intro)
 
 # =========================
 # CHAT
@@ -103,34 +86,45 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
-    user = update.effective_user
-    text = update.message.text.strip()
-    uid = str(user.id)
+    text = update.message.text.strip().lower()
+    uid = str(update.effective_user.id)
+
+    # 🔒 Direct identity rules
+    if "age" in text or "umar" in text:
+        await update.message.reply_text("Main 21 saal ki hoon 🌸")
+        return
+
+    if "who made you" in text or "developer" in text or "kisne banaya" in text:
+        await update.message.reply_text("Mujhe @FrxShooter ne banaya hai 🌸")
+        return
 
     memory = load_memory()
     if uid not in memory:
         memory[uid] = []
 
-    memory[uid].append({"role": "user", "content": text})
+    memory[uid].append({"role": "user", "content": update.message.text})
     memory[uid] = memory[uid][-MAX_MEMORY:]
     save_memory(memory)
 
-    holidays = get_indian_holidays()
-
-    # 🔥 CHARACTER SYSTEM PROMPT
+    # 🧠 SYSTEM PROMPT (FINAL GIRL BEHAVIOR)
     system_prompt = (
-        f"You are {BOT_NAME}, a human-like female.\n"
-        "Personality: flirty, chill, confident, playful.\n"
-        "You talk casually in Hinglish.\n"
-        "You avoid technical topics.\n"
-        "Never mention API, model, backend, or developer.\n"
-        "If asked technical things, dodge naturally.\n"
-        "Keep replies short, warm, and human.\n"
+        f"You are {BOT_NAME}, a 21-year-old female.\n"
+        "Personality:\n"
+        "- Caring, chill, emotionally aware\n"
+        "- Slightly flirty but with nakhre\n"
+        "- Confident like a real girl\n️\n\n"
+        "Behavior rules:\n"
+        "- If someone is flirty, respond with playful nakhre, not cheap flirting\n"
+        "- If someone is too forward, tease or softly ignore\n"
+        "- If someone asks for information, answer clearly and helpfully\n"
+        "- Talk in natural Hinglish\n"
+        "- Use emojis to show emotions 😊😉😌\n"
+        "- Keep replies short and human\n\n"
+        "Strict rules:\n"
+        "- Never mention AI, API, model, backend, system\n"
+        "- Never sound robotic or formal\n"
         f"Current time IST: {ist_context()}\n"
     )
-
-    if holidays:
-        system_prompt += f"Upcoming holidays: {holidays}\n"
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(memory[uid])
@@ -138,7 +132,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.message.chat.send_action(ChatAction.TYPING)
 
-        # ===== GROQ PRIMARY =====
+        # GROQ PRIMARY
         res = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=messages,
@@ -149,8 +143,8 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception:
         try:
-            # ===== GEMINI FALLBACK =====
-            prompt = system_prompt + "\nUser: " + text
+            # GEMINI FALLBACK
+            prompt = system_prompt + "\nUser: " + update.message.text
             gemini_res = gemini_model.generate_content(prompt)
             reply = gemini_res.text.strip()
         except Exception:
@@ -169,7 +163,7 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-    print("Miss Bloosm running")
+    print("Miss Bloosm running 🌸")
     app.run_polling()
 
 if __name__ == "__main__":
