@@ -3,3 +3,4 @@ groq
 pytz
 requests
 openai
+google-generativeai
