@@ -15,12 +15,14 @@ from telegram.ext import (
 from telegram.constants import ChatAction
 
 from groq import Groq
+import google.generativeai as genai
 
 # =========================
 # ENV VARIABLES
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")
 
 # =========================
@@ -36,7 +38,13 @@ TIMEZONE = pytz.timezone("Asia/Kolkata")
 client = Groq(api_key=GROQ_API_KEY)
 
 # =========================
-# LONG MEMORY
+# GEMINI CLIENT (ADDED)
+# =========================
+genai.configure(api_key=GEMINI_API_KEY)
+gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+
+# =========================
+# LONG MEMORY (FILE)
 # =========================
 MEMORY_FILE = "memory.json"
 MAX_MEMORY = 200
@@ -54,14 +62,14 @@ def save_memory(data):
         json.dump(data, f, indent=2)
 
 # =========================
-# TIME CONTEXT
+# TIME CONTEXT (IST)
 # =========================
 def ist_context():
     now = datetime.now(TIMEZONE)
     return now.strftime("%A, %d %B %Y | %I:%M %p IST")
 
 # =========================
-# HOLIDAYS
+# INDIAN HOLIDAYS (API)
 # =========================
 def get_indian_holidays():
     year = datetime.now(TIMEZONE).year
@@ -81,11 +89,12 @@ def get_indian_holidays():
                 upcoming.append(f"{item['name']} ({d.strftime('%d %b')})")
 
         return ", ".join(upcoming[:5]) if upcoming else "No upcoming holidays found"
+
     except Exception:
         return None
 
 # =========================
-# START
+# /START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     intro = (
@@ -98,7 +107,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(intro)
 
 # =========================
-# CHAT
+# MAIN CHAT
 # =========================
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -140,9 +149,10 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     messages.extend(memory[uid])
 
     try:
-        # ✅ Typing indicator added
+        # ✅ Typing indicator
         await update.message.chat.send_action(ChatAction.TYPING)
 
+        # ===== Primary: GROQ =====
         response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=messages,
@@ -152,17 +162,23 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         reply = response.choices[0].message.content.strip()
 
-        memory[uid].append({"role": "assistant", "content": reply})
-        memory[uid] = memory[uid][-MAX_MEMORY:]
-        save_memory(memory)
-
-        await update.message.reply_text(reply)
-
     except Exception:
-        return
+        try:
+            # ===== Fallback: GEMINI =====
+            prompt = system_prompt + "\n" + user_text
+            gemini_response = gemini_model.generate_content(prompt)
+            reply = gemini_response.text.strip()
+        except Exception:
+            return
+
+    memory[uid].append({"role": "assistant", "content": reply})
+    memory[uid] = memory[uid][-MAX_MEMORY:]
+    save_memory(memory)
+
+    await update.message.reply_text(reply)
 
 # =========================
-# RUN
+# RUN BOT
 # =========================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
