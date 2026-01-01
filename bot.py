@@ -2,7 +2,6 @@ import os
 import json
 from datetime import datetime
 import pytz
-import requests
 
 from telegram import Update
 from telegram.ext import (
@@ -18,19 +17,17 @@ from groq import Groq
 import google.generativeai as genai
 
 # =========================
-# ENV
+# CONFIG
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")
 
-# =========================
-# IDENTITY
-# =========================
 BOT_NAME = "Miss Bloosm"
 BOT_AGE = "21"
 DEVELOPER_USERNAME = "@Frx_Shooter"
+OWNER_ID = 5436530930
+
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
 # =========================
@@ -44,7 +41,7 @@ gemini_model = genai.GenerativeModel("gemini-1.5-flash")
 # MEMORY
 # =========================
 MEMORY_FILE = "memory.json"
-MAX_MEMORY = 200
+MAX_MEMORY = 120
 
 if not os.path.exists(MEMORY_FILE):
     with open(MEMORY_FILE, "w") as f:
@@ -59,47 +56,51 @@ def save_memory(data):
         json.dump(data, f, indent=2)
 
 # =========================
-# TIME
+# HELPERS
 # =========================
-def ist_context():
-    now = datetime.now(TIMEZONE)
-    return now.strftime("%A, %d %B %Y | %I:%M %p IST")
+def ist_time():
+    return datetime.now(TIMEZONE)
 
-# =========================
-# MOOD DETECTOR (LIGHT)
-# =========================
-def detect_mood(text: str):
+def detect_mode_and_mood(text: str):
     t = text.lower()
-    sexual = ["sex", "kiss", "nude", "bed", "hot", "love you", "bf", "gf"]
-    sad = ["sad", "alone", "cry", "hurt", "broken", "depressed"]
-    angry = ["angry", "mad", "hate", "irritated", "gussa"]
-    happy = ["happy", "excited", "lol", "haha", "fun", "nice"]
-    motivate = ["motivate", "tired", "give up", "can't", "fail"]
+
+    sexual = ["sex", "nude", "kiss", "bed", "hot"]
+    sad = ["sad", "alone", "cry", "broken", "depressed"]
+    angry = ["angry", "gussa", "hate"]
+    happy = ["happy", "lol", "haha", "excited"]
 
     if any(w in t for w in sexual):
-        return "sexual"
-    if any(w in t for w in sad):
-        return "sad"
-    if any(w in t for w in angry):
-        return "angry"
-    if any(w in t for w in happy):
-        return "happy"
-    if any(w in t for w in motivate):
-        return "motivational"
-    return "cool"
+        mood = "sexual"
+    elif any(w in t for w in sad):
+        mood = "sad"
+    elif any(w in t for w in angry):
+        mood = "angry"
+    elif any(w in t for w in happy):
+        mood = "happy"
+    else:
+        mood = "cool"
+
+    hour = ist_time().hour
+    if mood == "sad":
+        mode = "support"
+    elif hour >= 22 or hour <= 5:
+        mode = "night"
+    else:
+        mode = "calm"
+
+    return mood, mode
 
 # =========================
-# START (WARNING)
+# START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    intro = (
+    await update.message.reply_text(
         "Hello, I’m Miss Bloosm 🌸\n\n"
         "I’m a calm, friendly AI designed for natural conversations.\n"
         "Human Like Replay Feels Emotionas.\n\n"
         "⚠️ This bot is currently in beta.\n"
         "Some replies may not always be perfect."
     )
-    await update.message.reply_text(intro)
 
 # =========================
 # CHAT
@@ -108,72 +109,104 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
-    raw_text = update.message.text.strip()
-    text = raw_text.lower()
-    uid = str(update.effective_user.id)
+    user_id = update.effective_user.id
+    raw = update.message.text.strip()
+    text = raw.lower()
+    uid = str(user_id)
 
-    # DIRECT IDENTITY ANSWERS
+    # OWNER VERIFICATION
+    if user_id == OWNER_ID and "developer" in text:
+        await update.message.reply_text(
+            f"😌 Haan, mujhe pata hai.\nAap hi mere creator ho {DEVELOPER_USERNAME} 🌸"
+        )
+        return
+
+    if user_id != OWNER_ID and "developer" in text:
+        await update.message.reply_text(
+            f"😄 Mujhe to sirf itna pata hai ki mujhe {DEVELOPER_USERNAME} ne build kiya hai 🌸"
+        )
+        return
+
     if "age" in text or "umar" in text:
-        await update.message.reply_text(f"Main {BOT_AGE} saal ki hoon 🌸")
+        await update.message.reply_text("Main 21 saal ki hoon 🌸")
         return
 
-    if ("who made you" in text) or ("developer" in text) or ("kisne banaya" in text):
-        await update.message.reply_text(f"Mujhe {DEVELOPER_USERNAME} ne build kiya hai 🌸")
-        return
+    mood, mode = detect_mode_and_mood(text)
 
-    mood = detect_mood(text)
+    # SEXUAL BOUNDARY (INTELLIGENT)
+    if mood == "sexual":
+        await update.message.reply_text(
+            "😳 Arre… itna aage nahi.\nMain thodi classy hoon 😌"
+        )
+        return
 
     memory = load_memory()
     if uid not in memory:
         memory[uid] = []
 
-    memory[uid].append({"role": "user", "content": raw_text})
+    memory[uid].append({"role": "user", "content": raw})
     memory[uid] = memory[uid][-MAX_MEMORY:]
     save_memory(memory)
 
+    # =========================
     # SYSTEM PROMPT (FINAL)
-    system_prompt = (
-        f"You are {BOT_NAME} 🌸, a {BOT_AGE}-year-old female.\n"
-        "Core personality: human-like, caring, chill, playful, confident.\n"
-        "Slightly naughty but classy.\n"
-        "Speak Hinglish with short, natural replies.\n"
-        "Use emojis to show emotions 😊😉😌🥺\n\n"
-        "MOOD RULES:\n"
-        "- sexual: soft refusal + nakhre, short, confident, no lecture\n"
-        "- sad: soft, caring, supportive, no jokes\n"
-        "- angry: calm, composed, de-escalate\n"
-        "- happy: match energy, playful\n"
-        "- motivational: encouraging, short\n"
-        "- cool: chill, friendly\n\n"
-        "BOUNDARIES:\n"
-        "- Never be explicit\n"
-        "- Never over-explain\n"
-        "- Never shame\n\n"
-        "STRICT:\n"
-        "- Never mention AI, API, model, backend, system\n"
-        f"Current mood: {mood}\n"
-        f"Current time IST: {ist_context()}\n"
-    )
+    # =========================
+    system_prompt = f"""
+You are {BOT_NAME} 🌸, a 21-year-old girl.
+
+You are kind, emotionally intelligent, and understanding.
+You behave like a normal, real girl.
+
+MODE: {mode.upper()}
+
+Mode behavior:
+- night: soft, warm, comforting
+- calm: balanced, gentle, logical
+- support: caring, listening, guiding
+
+Mood handling:
+- sad → emotional support
+- angry → calm grounding
+- happy → share joy
+- cool → friendly
+- sexual → already handled outside
+
+Personality:
+- Intelligent and clever
+- Never naive
+- Never blindly agree
+- Adjust behavior based on feelings
+
+Style:
+- Hinglish
+- Short, meaningful replies
+- Soft emojis 😊😌🌸
+- Never dramatic
+- Never robotic
+
+Rules:
+- Never mention AI, API, system, backend
+- Never over-explain
+- Always think before replying
+"""
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(memory[uid])
 
     try:
         await update.message.chat.send_action(ChatAction.TYPING)
-        # GROQ PRIMARY
         res = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=messages,
-            temperature=0.7,
-            max_tokens=200,
+            temperature=0.65,
+            max_tokens=180,
         )
         reply = res.choices[0].message.content.strip()
     except Exception:
         try:
-            # GEMINI FALLBACK
-            prompt = system_prompt + "\nUser: " + raw_text
-            gemini_res = gemini_model.generate_content(prompt)
-            reply = gemini_res.text.strip()
+            reply = gemini_model.generate_content(
+                system_prompt + "\nUser: " + raw
+            ).text.strip()
         except Exception:
             return
 
