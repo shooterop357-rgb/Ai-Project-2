@@ -18,7 +18,7 @@ from groq import Groq
 import google.generativeai as genai
 
 # =========================
-# ENV VARIABLES
+# ENV
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -26,25 +26,22 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")
 
 # =========================
-# CORE IDENTITY
+# IDENTITY
 # =========================
 BOT_NAME = "Miss Bloosm"
 DEVELOPER = "@Frx_Shooter"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
 # =========================
-# GROQ CLIENT
+# AI CLIENTS
 # =========================
-client = Groq(api_key=GROQ_API_KEY)
+groq_client = Groq(api_key=GROQ_API_KEY)
 
-# =========================
-# GEMINI CLIENT (ADDED)
-# =========================
 genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel("gemini-1.5-flash")
 
 # =========================
-# LONG MEMORY (FILE)
+# MEMORY
 # =========================
 MEMORY_FILE = "memory.json"
 MAX_MEMORY = 200
@@ -62,14 +59,14 @@ def save_memory(data):
         json.dump(data, f, indent=2)
 
 # =========================
-# TIME CONTEXT (IST)
+# TIME
 # =========================
 def ist_context():
     now = datetime.now(TIMEZONE)
     return now.strftime("%A, %d %B %Y | %I:%M %p IST")
 
 # =========================
-# INDIAN HOLIDAYS (API)
+# HOLIDAYS
 # =========================
 def get_indian_holidays():
     year = datetime.now(TIMEZONE).year
@@ -79,95 +76,83 @@ def get_indian_holidays():
     try:
         r = requests.get(url, headers=headers, timeout=10)
         data = r.json()
-
-        upcoming = []
         today = datetime.now(TIMEZONE).date()
 
+        upcoming = []
         for item in data:
             d = datetime.strptime(item["date"], "%Y-%m-%d").date()
             if d >= today:
                 upcoming.append(f"{item['name']} ({d.strftime('%d %b')})")
 
-        return ", ".join(upcoming[:5]) if upcoming else "No upcoming holidays found"
-
+        return ", ".join(upcoming[:3]) if upcoming else None
     except Exception:
         return None
 
 # =========================
-# /START
+# START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    intro = (
-        f"Hello, I’m {BOT_NAME} 🌸\n\n"
-        "I’m a calm, friendly AI designed for natural conversations.\n"
-        "Human Like Replay Feels Emotionas.\n\n"
-        "⚠️ This bot is currently in beta.\n"
-        "Some replies may not always be perfect."
+    await update.message.reply_text(
+        f"Hey 👋\nI’m {BOT_NAME}.\nChill raho, baat karte hain 😌"
     )
-    await update.message.reply_text(intro)
 
 # =========================
-# MAIN CHAT
+# CHAT
 # =========================
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
     user = update.effective_user
-    user_text = update.message.text.strip()
-
-    memory = load_memory()
+    text = update.message.text.strip()
     uid = str(user.id)
 
+    memory = load_memory()
     if uid not in memory:
         memory[uid] = []
 
-    memory[uid].append({"role": "user", "content": user_text})
+    memory[uid].append({"role": "user", "content": text})
     memory[uid] = memory[uid][-MAX_MEMORY:]
     save_memory(memory)
 
-    holidays_context = get_indian_holidays()
+    holidays = get_indian_holidays()
 
+    # 🔥 CHARACTER SYSTEM PROMPT
     system_prompt = (
-        f"You are {BOT_NAME}, a female AI assistant.\n"
-        f"Developer: {DEVELOPER}.\n\n"
-        "Purpose:\n"
-        "- Calm, friendly, professional conversation\n"
-        "- Human-like tone\n"
-        "- Light emojis allowed naturally\n\n"
-        "Rules:\n"
-        "- No automatic or scripted replies\n"
-        "- Never mention errors or technical issues\n"
-        "- If unsure, respond naturally like a human\n\n"
-        f"Current time (IST): {ist_context()}\n"
+        f"You are {BOT_NAME}, a human-like female.\n"
+        "Personality: flirty, chill, confident, playful.\n"
+        "You talk casually in Hinglish.\n"
+        "You avoid technical topics.\n"
+        "Never mention API, model, backend, or developer.\n"
+        "If asked technical things, dodge naturally.\n"
+        "Keep replies short, warm, and human.\n"
+        f"Current time IST: {ist_context()}\n"
     )
 
-    if holidays_context:
-        system_prompt += f"Upcoming Indian holidays: {holidays_context}\n"
+    if holidays:
+        system_prompt += f"Upcoming holidays: {holidays}\n"
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(memory[uid])
 
     try:
-        # ✅ Typing indicator
         await update.message.chat.send_action(ChatAction.TYPING)
 
-        # ===== Primary: GROQ =====
-        response = client.chat.completions.create(
+        # ===== GROQ PRIMARY =====
+        res = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=messages,
-            temperature=0.65,
+            temperature=0.7,
             max_tokens=200,
         )
-
-        reply = response.choices[0].message.content.strip()
+        reply = res.choices[0].message.content.strip()
 
     except Exception:
         try:
-            # ===== Fallback: GEMINI =====
-            prompt = system_prompt + "\n" + user_text
-            gemini_response = gemini_model.generate_content(prompt)
-            reply = gemini_response.text.strip()
+            # ===== GEMINI FALLBACK =====
+            prompt = system_prompt + "\nUser: " + text
+            gemini_res = gemini_model.generate_content(prompt)
+            reply = gemini_res.text.strip()
         except Exception:
             return
 
@@ -178,13 +163,13 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply)
 
 # =========================
-# RUN BOT
+# RUN
 # =========================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-    print("Miss Bloosm is running 🌸")
+    print("Miss Bloosm running")
     app.run_polling()
 
 if __name__ == "__main__":
