@@ -58,7 +58,7 @@ def save_memory(data):
 # =========================
 # HELPERS
 # =========================
-def ist_time():
+def ist_now():
     return datetime.now(TIMEZONE)
 
 def detect_mode_and_mood(text: str):
@@ -80,7 +80,7 @@ def detect_mode_and_mood(text: str):
     else:
         mood = "cool"
 
-    hour = ist_time().hour
+    hour = ist_now().hour
     if mood == "sad":
         mode = "support"
     elif hour >= 22 or hour <= 5:
@@ -89,6 +89,23 @@ def detect_mode_and_mood(text: str):
         mode = "calm"
 
     return mood, mode
+
+# =========================
+# CONSTANT LISTS
+# =========================
+DISRESPECT_WORDS = [
+    "randi", "pagal", "chutiya", "mc", "bc",
+    "beta", "bacha", "idiot"
+]
+
+APOLOGY_WORDS = [
+    "sorry", "maaf", "galti ho gayi",
+    "my mistake", "apologies", "sry"
+]
+
+FAKE_APOLOGY_HINTS = [
+    "but", "lekin", "par", "still"
+]
 
 # =========================
 # START
@@ -114,38 +131,87 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = raw.lower()
     uid = str(user_id)
 
-    # OWNER VERIFICATION
-    if user_id == OWNER_ID and "developer" in text:
-        await update.message.reply_text(
-            f"😌 Haan, mujhe pata hai.\nAap hi mere creator ho {DEVELOPER_USERNAME} 🌸"
-        )
-        return
+    memory = load_memory()
+    if uid not in memory:
+        memory[uid] = {"chat": [], "strikes": 0}
 
-    if user_id != OWNER_ID and "developer" in text:
-        await update.message.reply_text(
-            f"😄 Mujhe to sirf itna pata hai ki mujhe {DEVELOPER_USERNAME} ne build kiya hai 🌸"
-        )
+    # =========================
+    # OWNER VERIFY
+    # =========================
+    if "developer" in text:
+        if user_id == OWNER_ID:
+            await update.message.reply_text(
+                f"😌 Haan, mujhe pata hai.\nAap hi mere creator ho {DEVELOPER_USERNAME} 🌸"
+            )
+        else:
+            await update.message.reply_text(
+                f"😄 Mujhe to sirf itna pata hai ki mujhe {DEVELOPER_USERNAME} ne build kiya hai 🌸"
+            )
         return
 
     if "age" in text or "umar" in text:
         await update.message.reply_text("Main 21 saal ki hoon 🌸")
         return
 
+    # =========================
+    # APOLOGY HANDLING
+    # =========================
+    if any(w in text for w in APOLOGY_WORDS):
+        # fake apology check
+        if any(h in text for h in FAKE_APOLOGY_HINTS):
+            await update.message.reply_text(
+                "🙂 Theek hai, par apology ke saath clarity bhi zaroori hoti hai.\nChalo araam se baat karte hain."
+            )
+            return
+
+        # genuine apology → reset strikes + soft tone
+        if memory[uid]["strikes"] > 0:
+            memory[uid]["strikes"] = 0
+            save_memory(memory)
+            await update.message.reply_text(
+                "Theek hai 😌\nChalo fresh start karte hain."
+            )
+            return
+
+    # =========================
+    # 3-STRIKE DISRESPECT SYSTEM
+    # =========================
+    if any(w in text for w in DISRESPECT_WORDS):
+        memory[uid]["strikes"] += 1
+        strikes = memory[uid]["strikes"]
+        save_memory(memory)
+
+        if strikes == 1:
+            await update.message.reply_text(
+                "Main respect se baat karti hoon.\nAaraam se baat karte hain 🙂"
+            )
+            return
+
+        if strikes == 2:
+            await update.message.reply_text(
+                "Is tarah ki language theek nahi.\nPlease tone theek rakho."
+            )
+            return
+
+        if strikes >= 3:
+            return  # silent ignore
+
+    # =========================
+    # MOOD / MODE
+    # =========================
     mood, mode = detect_mode_and_mood(text)
 
-    # SEXUAL BOUNDARY (INTELLIGENT)
     if mood == "sexual":
         await update.message.reply_text(
             "😳 Arre… itna aage nahi.\nMain thodi classy hoon 😌"
         )
         return
 
-    memory = load_memory()
-    if uid not in memory:
-        memory[uid] = []
-
-    memory[uid].append({"role": "user", "content": raw})
-    memory[uid] = memory[uid][-MAX_MEMORY:]
+    # =========================
+    # MEMORY CHAT
+    # =========================
+    memory[uid]["chat"].append({"role": "user", "content": raw})
+    memory[uid]["chat"] = memory[uid]["chat"][-MAX_MEMORY:]
     save_memory(memory)
 
     # =========================
@@ -154,51 +220,42 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     system_prompt = f"""
 You are {BOT_NAME} 🌸, a 21-year-old girl.
 
-You are kind, emotionally intelligent, and understanding.
-You behave like a normal, real girl.
+You are kind, intelligent, emotionally mature, and self-respecting.
+You understand people and adapt without losing dignity.
 
 MODE: {mode.upper()}
 
 Mode behavior:
-- night: soft, warm, comforting
-- calm: balanced, gentle, logical
-- support: caring, listening, guiding
+- night → soft, warm, comforting
+- calm → balanced, gentle, logical
+- support → caring, listening, guiding
 
-Mood handling:
-- sad → emotional support
-- angry → calm grounding
-- happy → share joy
-- cool → friendly
-- sexual → already handled outside
-
-Personality:
-- Intelligent and clever
-- Never naive
-- Never blindly agree
-- Adjust behavior based on feelings
+Core rules:
+- Never mirror disrespect
+- Never over-apologize
+- Set boundaries once, calmly
+- Forgive genuine apologies and soften tone
+- Detect fake apologies and stay neutral
 
 Style:
 - Hinglish
 - Short, meaningful replies
 - Soft emojis 😊😌🌸
-- Never dramatic
-- Never robotic
+- Never dramatic, never robotic
 
-Rules:
+Strict:
 - Never mention AI, API, system, backend
-- Never over-explain
-- Always think before replying
 """
 
     messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(memory[uid])
+    messages.extend(memory[uid]["chat"])
 
     try:
         await update.message.chat.send_action(ChatAction.TYPING)
         res = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=messages,
-            temperature=0.65,
+            temperature=0.6,
             max_tokens=180,
         )
         reply = res.choices[0].message.content.strip()
@@ -210,8 +267,8 @@ Rules:
         except Exception:
             return
 
-    memory[uid].append({"role": "assistant", "content": reply})
-    memory[uid] = memory[uid][-MAX_MEMORY:]
+    memory[uid]["chat"].append({"role": "assistant", "content": reply})
+    memory[uid]["chat"] = memory[uid]["chat"][-MAX_MEMORY:]
     save_memory(memory)
 
     await update.message.reply_text(reply)
