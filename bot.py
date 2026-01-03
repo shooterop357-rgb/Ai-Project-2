@@ -120,7 +120,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     holidays_context = get_indian_holidays()
 
     system_prompt = (
-f"You are {BOT_NAME}, a female AI assistant.\n"
+        f"You are {BOT_NAME}, a female AI assistant.\n"
         f"Developer: {DEVELOPER}.\n\n"
         "Purpose:\n"
         "- Calm, friendly, professional conversation\n"
@@ -172,3 +172,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+        
