@@ -27,6 +27,7 @@ HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")  # INDIAN CALENDAR API
 # =========================
 BOT_NAME = "Miss Bloosm"
 DEVELOPER = "@Frx_Shooter"
+OWNER_ID = 5436530930
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
 # =========================
@@ -106,6 +107,10 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = update.effective_user
     user_text = update.message.text.strip()
+
+    if "frx shooter" in user_text.lower() and user.id != OWNER_ID:
+        await update.message.reply_text("You are not my developer.")
+        return
 
     memory = load_memory()
     uid = str(user.id)
