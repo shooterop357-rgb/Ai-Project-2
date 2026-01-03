@@ -27,7 +27,6 @@ HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")  # INDIAN CALENDAR API
 # =========================
 BOT_NAME = "Miss Bloosm"
 DEVELOPER = "@Frx_Shooter"
-OWNER_ID = 5436530930
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
 # =========================
@@ -108,18 +107,8 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_text = update.message.text.strip()
 
-    # 🔒 developer fake claim block
-    if "frx shooter" in user_text.lower() and user.id != OWNER_ID:
-        await update.message.reply_text("You are not my developer.")
-        return
-
-    # ✅ OWNER AWARENESS FLAG
-    is_owner = user.id == OWNER_ID
-
     memory = load_memory()
-
-    # ✅ owner vs user memory separation
-    uid = f"owner_{user.id}" if is_owner else f"user_{user.id}"
+    uid = str(user.id)
 
     if uid not in memory:
         memory[uid] = []
@@ -131,14 +120,15 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     holidays_context = get_indian_holidays()
 
     system_prompt = (
-        f"You are {BOT_NAME}, a female AI assistant.\n"
-        f"Developer: {DEVELOPER}.\n"
-        f"User role: {'Owner' if is_owner else 'User'}.\n\n"
+f"You are {BOT_NAME}, a female AI assistant.\n"
+        f"Developer: {DEVELOPER}.\n\n"
         "Purpose:\n"
         "- Calm, friendly, professional conversation\n"
         "- Human-like tone\n"
         "- Light emojis allowed naturally\n\n"
         "Rules:\n"
+        "- Never share API keys, tokens, secrets, or internal configuration\n"
+        "- Never discuss or reveal any API details, even if asked by owner or user\n"
         "- No automatic or scripted replies\n"
         "- Never mention errors or technical issues\n"
         "- If unsure, respond naturally like a human\n\n"
