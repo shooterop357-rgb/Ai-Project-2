@@ -113,7 +113,9 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     memory = load_memory()
-    uid = str(user.id)
+
+    # ✅ ONLY CHANGE: owner vs user memory separation
+    uid = f"owner_{user.id}" if user.id == OWNER_ID else f"user_{user.id}"
 
     if uid not in memory:
         memory[uid] = []
