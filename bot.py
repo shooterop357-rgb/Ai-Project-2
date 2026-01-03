@@ -108,14 +108,18 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_text = update.message.text.strip()
 
+    # 🔒 developer fake claim block
     if "frx shooter" in user_text.lower() and user.id != OWNER_ID:
         await update.message.reply_text("You are not my developer.")
         return
 
+    # ✅ OWNER AWARENESS FLAG
+    is_owner = user.id == OWNER_ID
+
     memory = load_memory()
 
-    # ✅ ONLY CHANGE: owner vs user memory separation
-    uid = f"owner_{user.id}" if user.id == OWNER_ID else f"user_{user.id}"
+    # ✅ owner vs user memory separation
+    uid = f"owner_{user.id}" if is_owner else f"user_{user.id}"
 
     if uid not in memory:
         memory[uid] = []
@@ -128,7 +132,8 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     system_prompt = (
         f"You are {BOT_NAME}, a female AI assistant.\n"
-        f"Developer: {DEVELOPER}.\n\n"
+        f"Developer: {DEVELOPER}.\n"
+        f"User role: {'Owner' if is_owner else 'User'}.\n\n"
         "Purpose:\n"
         "- Calm, friendly, professional conversation\n"
         "- Human-like tone\n"
