@@ -63,10 +63,6 @@ def ist_context():
 # INDIAN HOLIDAYS (API)
 # =========================
 def get_indian_holidays():
-    """
-    Uses API Ninjas style API:
-    https://api.api-ninjas.com/v1/holidays?country=IN&year=YYYY
-    """
     year = datetime.now(TIMEZONE).year
     url = f"https://api.api-ninjas.com/v1/holidays?country=IN&year={year}"
     headers = {"X-Api-Key": HOLIDAY_API_KEY}
@@ -86,10 +82,10 @@ def get_indian_holidays():
         return ", ".join(upcoming[:5]) if upcoming else "No upcoming holidays found"
 
     except Exception:
-        return None  # silent failure
+        return None
 
 # =========================
-# /START (ONLY FIXED MESSAGE)
+# /START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     intro = (
@@ -102,7 +98,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(intro)
 
 # =========================
-# MAIN CHAT (PURE AI ONLY)
+# MAIN CHAT
 # =========================
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -117,15 +113,12 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid not in memory:
         memory[uid] = []
 
-    # Save user message
     memory[uid].append({"role": "user", "content": user_text})
     memory[uid] = memory[uid][-MAX_MEMORY:]
     save_memory(memory)
 
-    # Calendar context from API
     holidays_context = get_indian_holidays()
 
-    # SYSTEM PROMPT (ONLY MEMORY & CONTEXT)
     system_prompt = (
         f"You are {BOT_NAME}, a female AI assistant.\n"
         f"Developer: {DEVELOPER}.\n\n"
@@ -145,6 +138,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(memory[uid])
+
     try:
         response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
@@ -155,7 +149,6 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         reply = response.choices[0].message.content.strip()
 
-        # Save assistant reply
         memory[uid].append({"role": "assistant", "content": reply})
         memory[uid] = memory[uid][-MAX_MEMORY:]
         save_memory(memory)
@@ -163,7 +156,6 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
 
     except Exception:
-        # Bot stays silent on any failure
         return
 
 # =========================
@@ -171,12 +163,10 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-
     print("Miss Bloosm is running 🌸")
     app.run_polling()
 
-if name == "main":
+if __name__ == "__main__":
     main()
