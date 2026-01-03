@@ -1,119 +1,182 @@
 import os
+import json
 from datetime import datetime
 import pytz
+import requests
+
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
-    ContextTypes,
-    MessageHandler,
-    filters,
     CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
 )
 
-# ================= CONFIG =================
-BOT_TOKEN = os.getenv("BOT_TOKEN")   # set env variable
-OWNER_ID = 5436530930                # <-- YOUR TELEGRAM USER ID
+from groq import Groq
+
+# =========================
+# ENV VARIABLES
+# =========================
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")  # INDIAN CALENDAR API
+
+# =========================
+# CORE IDENTITY
+# =========================
+BOT_NAME = "Miss Bloosm"
+DEVELOPER = "@Frx_Shooter"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
-# ================= PERSONAL AI GUARD =================
-async def personal_guard(update: Update):
+# =========================
+# GROQ CLIENT
+# =========================
+client = Groq(api_key=GROQ_API_KEY)
+
+# =========================
+# LONG MEMORY (FILE)
+# =========================
+MEMORY_FILE = "memory.json"
+MAX_MEMORY = 200
+
+if not os.path.exists(MEMORY_FILE):
+    with open(MEMORY_FILE, "w") as f:
+        json.dump({}, f)
+
+def load_memory():
+    with open(MEMORY_FILE, "r") as f:
+        return json.load(f)
+
+def save_memory(data):
+    with open(MEMORY_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+# =========================
+# TIME CONTEXT (IST)
+# =========================
+def ist_context():
+    now = datetime.now(TIMEZONE)
+    return now.strftime("%A, %d %B %Y | %I:%M %p IST")
+
+# =========================
+# INDIAN HOLIDAYS (API)
+# =========================
+def get_indian_holidays():
+    """
+    Uses API Ninjas style API:
+    https://api.api-ninjas.com/v1/holidays?country=IN&year=YYYY
+    """
+    year = datetime.now(TIMEZONE).year
+    url = f"https://api.api-ninjas.com/v1/holidays?country=IN&year={year}"
+    headers = {"X-Api-Key": HOLIDAY_API_KEY}
+
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        data = r.json()
+
+        upcoming = []
+        today = datetime.now(TIMEZONE).date()
+
+        for item in data:
+            d = datetime.strptime(item["date"], "%Y-%m-%d").date()
+            if d >= today:
+                upcoming.append(f"{item['name']} ({d.strftime('%d %b')})")
+
+        return ", ".join(upcoming[:5]) if upcoming else "No upcoming holidays found"
+
+    except Exception:
+        return None  # silent failure
+
+# =========================
+# /START (ONLY FIXED MESSAGE)
+# =========================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    intro = (
+        f"Hello, I’m {BOT_NAME} 🌸\n\n"
+        "I’m a calm, friendly AI designed for natural conversations.\n"
+        "Human Like Replay Feels Emotionas.\n\n"
+        "⚠️ This bot is currently in beta.\n"
+        "Some replies may not always be perfect."
+    )
+    await update.message.reply_text(intro)
+
+# =========================
+# MAIN CHAT (PURE AI ONLY)
+# =========================
+async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+
     user = update.effective_user
-    if user.id != OWNER_ID:
-        await update.message.reply_text(
-            "This AI is personal.\nAccess denied."
-        )
-        return False
-    return True
+    user_text = update.message.text.strip()
 
-# ================= TIME CHECK =================
-def is_night():
-    hour = datetime.now(TIMEZONE).hour
-    return hour >= 22 or hour < 4
+    memory = load_memory()
+    uid = str(user.id)
 
-# ================= HONEST THINKING ENGINE =================
-def honest_reply(text: str, night: bool):
-    t = text.lower()
+    if uid not in memory:
+        memory[uid] = []
 
-    # ---- Loneliness ----
-    if "lonely" in t or "akela" in t:
-        return (
-            "Lonely feel hona galat nahi.\n"
-            "Par yahin ruk jana bhi solution nahi.\n"
-            "Tumhe aage chalna hi padega."
-        )
+    # Save user message
+    memory[uid].append({"role": "user", "content": user_text})
+    memory[uid] = memory[uid][-MAX_MEMORY:]
+    save_memory(memory)
 
-    # ---- Love / GF thoughts ----
-    if "gf" in t or "pyaar" in t or "love" in t:
-        return (
-            "Pyaar koi reward nahi hota.\n"
-            "Wo tab aata hai jab tum apni life sambhalte ho.\n"
-            "Isse chase mat karo."
-        )
+    # Calendar context from API
+    holidays_context = get_indian_holidays()
 
-    # ---- Weak / failure ----
-    if "weak" in t or "fail" in t:
-        return (
-            "Weak hona nahi.\n"
-            "Ruk jana weak hona hota hai.\n"
-            "Tum rukey nahi ho."
-        )
-
-    # ---- Overthinking ----
-    if "overthink" in t or "soch" in t:
-        return (
-            "Dimaag ka kaam sochna hai.\n"
-            "Tumhara kaam har soch pe bharosa karna nahi.\n"
-            "Select karo."
-        )
-
-    # ---- Meaning of life ----
-    if "meaning" in t or "zindagi" in t or "life" in t:
-        return (
-            "Zindagi ka meaning milta nahi.\n"
-            "Zindagi ka meaning banaya jata hai.\n"
-            "Roz ke actions se."
-        )
-
-    # ---- Default (night/day) ----
-    if night:
-        return (
-            "Raat clarity laati hai,\n"
-            "par decisions ke liye din hota hai.\n"
-            "Abhi bas shaant raho."
-        )
-    else:
-        return (
-            "Tum theek direction me ho.\n"
-            "Perfect hona zaroori nahi.\n"
-            "Consistent rehna zaroori hai."
-        )
-
-# ================= MAIN REPLY HANDLER =================
-async def blossom_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await personal_guard(update):
-        return
-
-    text = update.message.text
-    reply = honest_reply(text, is_night())
-    await update.message.reply_text(reply)
-
-# ================= FINAL SHUTDOWN =================
-async def shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await personal_guard(update):
-        return
-
-    await update.message.reply_text(
-        "Yahin tak.\n"
-        "Ab jo karna hai,\n"
-        "tumhe khud karna hoga.\n\n"
-        "— system shutting down"
+    # SYSTEM PROMPT (ONLY MEMORY & CONTEXT)
+    system_prompt = (
+        f"You are {BOT_NAME}, a female AI assistant.\n"
+        f"Developer: {DEVELOPER}.\n\n"
+        "Purpose:\n"
+        "- Calm, friendly, professional conversation\n"
+        "- Human-like tone\n"
+        "- Light emojis allowed naturally\n\n"
+        "Rules:\n"
+        "- No automatic or scripted replies\n"
+        "- Never mention errors or technical issues\n"
+        "- If unsure, respond naturally like a human\n\n"
+        f"Current time (IST): {ist_context()}\n"
     )
 
-# ================= START =================
-app = ApplicationBuilder().token(BOT_TOKEN).build()
+    if holidays_context:
+        system_prompt += f"Upcoming Indian holidays: {holidays_context}\n"
 
-app.add_handler(CommandHandler("end", shutdown))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, blossom_reply))
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(memory[uid])
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=messages,
+            temperature=0.65,
+            max_tokens=200,
+        )
 
-print("MISS BLOSSOM RUNNING | HONEST PERSONAL MODE")
-app.run_polling()
+        reply = response.choices[0].message.content.strip()
+
+        # Save assistant reply
+        memory[uid].append({"role": "assistant", "content": reply})
+        memory[uid] = memory[uid][-MAX_MEMORY:]
+        save_memory(memory)
+
+        await update.message.reply_text(reply)
+
+    except Exception:
+        # Bot stays silent on any failure
+        return
+
+# =========================
+# RUN BOT
+# =========================
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+
+    print("Miss Bloosm is running 🌸")
+    app.run_polling()
+
+if name == "main":
+    main()
