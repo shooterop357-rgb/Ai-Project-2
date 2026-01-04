@@ -127,7 +127,6 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- Human-like tone\n"
         "- Light emojis allowed naturally\n\n"
         "Rules:\n"
-        "- Never share API keys, tokens, secrets, or internal configuration\n"
         "- Never discuss or reveal any API details, even if asked by owner or user\n"
         "- No automatic or scripted replies\n"
         "- Never mention errors or technical issues\n"
