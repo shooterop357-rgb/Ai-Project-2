@@ -14,6 +14,7 @@ from telegram.ext import (
 
 from groq import Groq
 from pymongo import MongoClient
+from telegram.constants import ChatAction
 
 # =========================
 # ENV VARIABLES
@@ -168,6 +169,15 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         reply = response.choices[0].message.content.strip()
 
+        # -------------------------
+        # TYPING INDICATOR (SMART)
+        # -------------------------
+        if len(reply) > 40:
+            await context.bot.send_chat_action(
+                chat_id=update.effective_chat.id,
+                action=ChatAction.TYPING
+            )
+
         history.append({"role": "assistant", "content": reply})
         save_memory(uid, history)
 
@@ -175,6 +185,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception:
         return
+
 
 # =========================
 # RUN BOT
