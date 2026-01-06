@@ -181,30 +181,30 @@ system_prompt = (
     f"Current time (IST): {ist_context()}\n"
 )
 
-    if holidays_context:
-        system_prompt += f"Upcoming Indian holidays: {holidays_context}\n"
+if holidays_context:
+    system_prompt += f"Upcoming Indian holidays: {holidays_context}\n"
 
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(memory[uid])
+messages = [{"role": "system", "content": system_prompt}]
+messages.extend(memory[uid])
 
-    try:
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=messages,
-            temperature=0.65,
-            max_tokens=200,
-        )
+try:
+    response = client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=messages,
+        temperature=0.65,
+        max_tokens=200,
+    )
 
-        reply = response.choices[0].message.content.strip()
+    reply = response.choices[0].message.content.strip()
 
-        memory[uid].append({"role": "assistant", "content": reply})
-        memory[uid] = memory[uid][-MAX_MEMORY:]
-        save_memory(memory)
+    memory[uid].append({"role": "assistant", "content": reply})
+    memory[uid] = memory[uid][-MAX_MEMORY:]
+    save_memory(memory)
 
-        await update.message.reply_text(reply)
+    await update.message.reply_text(reply)
 
-    except Exception:
-        return
+except Exception:
+    return
 
 # =========================
 # RUN BOT
