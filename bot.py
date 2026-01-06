@@ -181,30 +181,40 @@ system_prompt = (
     f"Current time (IST): {ist_context()}\n"
 )
 
-if holidays_context:
-    system_prompt += f"Upcoming Indian holidays: {holidays_context}\n"
+# =========================
+# CHAT HANDLER
+# =========================
+async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = str(update.effective_user.id)
 
-messages = [{"role": "system", "content": system_prompt}]
-messages.extend(memory[uid])
+    if uid not in memory:
+        memory[uid] = []
 
-try:
-    response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=messages,
-        temperature=0.65,
-        max_tokens=200,
-    )
+    if holidays_context:
+        system_prompt += f"Upcoming Indian holidays: {holidays_context}\n"
 
-    reply = response.choices[0].message.content.strip()
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(memory[uid])
 
-    memory[uid].append({"role": "assistant", "content": reply})
-    memory[uid] = memory[uid][-MAX_MEMORY:]
-    save_memory(memory)
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",  # GROQ ONLY
+            messages=messages,
+            temperature=0.65,
+            max_tokens=200,
+        )
 
-    await update.message.reply_text(reply)
+        reply = response.choices[0].message.content.strip()
 
-except Exception:
-    return
+        memory[uid].append({"role": "assistant", "content": reply})
+        memory[uid] = memory[uid][-MAX_MEMORY:]
+        save_memory(memory)
+
+        await update.message.reply_text(reply)
+
+    except Exception:
+        return
+
 
 # =========================
 # RUN BOT
@@ -216,6 +226,6 @@ def main():
     print("Miss Bloosm is running 🌸")
     app.run_polling()
 
+
 if __name__ == "__main__":
     main()
-        
