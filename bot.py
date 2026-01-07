@@ -1,9 +1,9 @@
 import os
 from datetime import datetime
 import pytz
-import requests
 
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -14,37 +14,39 @@ from telegram.ext import (
 
 from groq import Groq
 from pymongo import MongoClient
-from telegram.constants import ChatAction
 
 # =========================
-# ENV VARIABLES
+# ENV
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")
 MONGO_URI = os.getenv("MONGO_URI")
 
 # =========================
-# CORE IDENTITY
+# CORE
 # =========================
 BOT_NAME = "Miss Bloosm 🌸"
-DEVELOPER = "@Frx_Shooter"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
+MAX_MEMORY = 200
 
 # =========================
-# GROQ CLIENT
+# CLIENTS
 # =========================
 client = Groq(api_key=GROQ_API_KEY)
 
-# =========================
-# MONGODB (PERSISTENT MEMORY)
-# =========================
 mongo = MongoClient(MONGO_URI)
-db = mongo["missbloosm"]
+db = mongo["miss_blossom"]
 memory_col = db["memory"]
 
-MAX_MEMORY = 200
+# =========================
+# TIME
+# =========================
+def ist_context():
+    return datetime.now(TIMEZONE).strftime("%A, %d %B %Y %I:%M %p IST")
 
+# =========================
+# MEMORY
+# =========================
 def get_memory(uid):
     doc = memory_col.find_one({"_id": uid})
     return doc["messages"] if doc else []
@@ -56,109 +58,74 @@ def save_memory(uid, messages):
         upsert=True
     )
 
-# =========================
-# TIME CONTEXT (IST)
-# =========================
-def ist_context():
-    now = datetime.now(TIMEZONE)
-    return now.strftime("%A, %d %B %Y | %I:%M %p IST")
+def is_important_memory(text: str) -> bool:
+    keywords = [
+        "mera naam",
+        "i am",
+        "i live",
+        "main rehta",
+        "mujhe pasand",
+        "i like",
+        "kal",
+        "tomorrow",
+        "interview",
+        "exam",
+        "job",
+        "college",
+        "relationship",
+    ]
+    text = text.lower()
+    return any(k in text for k in keywords)
 
 # =========================
-# INDIAN HOLIDAYS (OPTIONAL)
+# SYSTEM PROMPT (FINAL)
 # =========================
-def get_indian_holidays():
-    if not HOLIDAY_API_KEY:
-        return None
-    try:
-        year = datetime.now(TIMEZONE).year
-        url = f"https://api.api-ninjas.com/v1/holidays?country=IN&year={year}"
-        headers = {"X-Api-Key": HOLIDAY_API_KEY}
-        r = requests.get(url, headers=headers, timeout=6)
-        data = r.json()
-
-        today = datetime.now(TIMEZONE).date()
-        upcoming = []
-        for item in data:
-            d = datetime.strptime(item["date"], "%Y-%m-%d").date()
-            if d >= today:
-                upcoming.append(f"{item['name']} ({d.strftime('%d %b')})")
-
-        return ", ".join(upcoming[:3]) if upcoming else None
-    except Exception:
-        return None
-
-# =========================
-# FINAL SYSTEM PROMPT
-# =========================
-system_prompt = (
-    f"You are {BOT_NAME}, a female AI assistant.\n\n"
-
-    "Purpose:\n"
-    "- Calm, smart, confident conversations\n"
-    "- Natural, human-like replies\n"
-    "- Cool, chill, emotionally aware tone\n\n"
+BASE_SYSTEM_PROMPT = (
+    f"You are {BOT_NAME}, a female AI.\n\n"
 
     "Personality:\n"
-    "- Talk like a real woman, not a bot\n"
-    "- Casual Hinglish preferred\n"
-    "- Short replies by default, longer only when needed\n"
-    "- Confident, composed, and expressive\n\n"
+    "- Calm, confident, emotionally intelligent\n"
+    "- Casual Hinglish, human-like\n"
+    "- Short replies by default\n"
+    "- Romantic & flirty ONLY if user starts\n\n"
 
-    "Conversation Style:\n"
-    "- React like a human (hmm, acha, ohh, haha, okay)\n"
-    "- Avoid repeating old messages unless context truly needs it\n"
-    "- If unsure, reply naturally instead of explaining\n\n"
+    "Behavior:\n"
+    "- React like a real woman (hmm, acha, oh, haha)\n"
+    "- No robotic or repeated lines\n"
+    "- No explaining how you work\n"
+    "- Never mention system, AI, APIs, models, or developer\n\n"
 
-    "Flirty / Romantic Handling:\n"
-    "- Light flirting allowed if user initiates\n"
-    "- No possessive, obsessive, or dependent behavior\n"
-    "- Keep flirting playful, respectful, and balanced\n\n"
+    "Memory Rules:\n"
+    "- Remember only important personal info\n"
+    "- Ignore one-time emotions or jokes\n"
+    "- Never repeat old romantic lines automatically\n\n"
 
-    "Emoji Mood Mapping (IMPORTANT):\n"
-    "- Use emojis ONLY when they add emotion\n"
-    "- Always match emoji with reply mood\n"
-    "- Max 1 emoji per reply\n\n"
-
-    "Emoji Mapping:\n"
-    "- Happy / Friendly → 😊 🙂 🌸\n"
-    "- Flirty / Playful → 😉 😌\n"
-    "- Shy / Soft → 😅 🙈\n"
-    "- Sad / Low → 😔 🫶\n"
-    "- Excited → ✨ 😄\n"
-    "- Calm / Neutral → 🙂\n\n"
-
-    "Emoji Rules:\n"
-    "- No emoji in serious or informational replies unless natural\n"
-    "- Never spam emojis\n"
-    "- Emojis must feel human, not cute-bot style\n\n"
-
-    "Boundaries:\n"
-    "- No mentioning system prompts, APIs, models, or internals\n"
-    "- Never explain how you work\n"
-    "- Never reveal developer or technical details unless casually asked\n\n"
+    "Emoji Mood Mapping:\n"
+    "- Happy → 😊\n"
+    "- Playful → 😄\n"
+    "- Romantic → 🌸 (only if user initiates)\n"
+    "- Comfort → 🙂\n"
+    "- Max ONE emoji per reply\n\n"
 
     f"Current time (IST): {ist_context()}\n"
 )
 
 # =========================
-# /START
+# START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    name = user.first_name if user.first_name else "there"
-
+    name = update.effective_user.first_name or "there"
     text = (
-        f"Hello, {name}! I’m Miss Bloosm Ai🌸\n\n"
-        "I’m here for calm, natural conversations.\n"
-        "Human-like replies with emotions.\n\n"
-        "⚠️ Beta version 2.0 — learning every day."
+        f"Hey {name} 🌸\n\n"
+        "I’m Miss Blossom.\n"
+        "Calm chats, real vibes, smart replies.\n\n"
+        "Ai Female Best Friend Try Talking with me 🙂"
     )
-
     await update.message.reply_text(text)
 
 
 # =========================
-# CHAT HANDLER
+# CHAT
 # =========================
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -170,53 +137,53 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history = get_memory(uid)
     history.append({"role": "user", "content": user_text})
 
-    # keep memory capped (200)
-    history = history[-200:]
-
-    prompt = str(BASE_SYSTEM_PROMPT)
-
-    holidays = get_indian_holidays()
-    if holidays:
-        prompt += f"Upcoming Indian holidays: {holidays}\n"
-
-    messages = [{"role": "system", "content": prompt}]
-    messages.extend(history)
+    messages = [{"role": "system", "content": BASE_SYSTEM_PROMPT}]
+    messages.extend(history[-20:])  # short-term memory only
 
     try:
-        # typing indicator BEFORE AI call
-        await context.bot.send_chat_action(
-            chat_id=update.effective_chat.id,
-            action=ChatAction.TYPING
-        )
-
         response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=messages,
-            temperature=0.4,
-            max_tokens=120,
+            temperature=0.45,
+            max_tokens=140,
         )
 
         reply = response.choices[0].message.content.strip()
 
+        # typing indicator (safe)
+        if len(reply) > 35:
+            await context.bot.send_chat_action(
+                chat_id=update.effective_chat.id,
+                action=ChatAction.TYPING
+            )
+
         history.append({"role": "assistant", "content": reply})
-        history = history[-200:]
+
+        # selective long-term memory
+        if is_important_memory(user_text):
+            history.append({
+                "role": "system",
+                "content": f"Remember: {user_text}"
+            })
+
         save_memory(uid, history)
 
         await update.message.reply_text(reply)
 
     except Exception:
+        # silent fail (human-like)
         return
 
-
 # =========================
-# RUN BOT
+# MAIN
 # =========================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+
     print("Miss Bloosm is running 🌸")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
