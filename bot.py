@@ -43,7 +43,7 @@ mongo = MongoClient(MONGO_URI)
 db = mongo["missbloosm"]
 memory_col = db["memory"]
 
-MAX_MEMORY = 300
+MAX_MEMORY = 200
 
 def get_memory(uid):
     doc = memory_col.find_one({"_id": uid})
@@ -162,8 +162,8 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=messages,
-            temperature=0.5,
-            max_tokens=160,
+            temperature=0.4,
+            max_tokens=120,
         )
 
         reply = response.choices[0].message.content.strip()
