@@ -112,10 +112,7 @@ BASE_SYSTEM_PROMPT = (
 
     "Boundaries:\n"
     "- Stay respectful and emotionally balanced\n\n"
-   
-    "Emoji Usage:\n"
-    "- Emojis only when they feel natural\n"
-    "- Maximum one emoji per reply\n\n"
+
 
     f"Current time (IST): {ist_context()}\n"
 )
