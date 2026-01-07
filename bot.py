@@ -121,20 +121,21 @@ BASE_SYSTEM_PROMPT = (
 )
 
 # =========================
-# /START (NEW WELCOME)
+# /START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     name = user.first_name if user.first_name else "there"
 
     text = (
-        f"Hello, {name} I’m Miss Bloosm 🌸\n\n"
+        f"Hello, {name}! I’m Miss Bloosm Ai🌸\n\n"
         "I’m here for calm, natural conversations.\n"
         "Human-like replies with emotions.\n\n"
         "⚠️ Beta version 2.0 — learning every day."
     )
 
     await update.message.reply_text(text)
+
 
 # =========================
 # CHAT HANDLER
@@ -149,6 +150,9 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history = get_memory(uid)
     history.append({"role": "user", "content": user_text})
 
+    # keep memory capped (200)
+    history = history[-200:]
+
     prompt = str(BASE_SYSTEM_PROMPT)
 
     holidays = get_indian_holidays()
@@ -159,6 +163,12 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     messages.extend(history)
 
     try:
+        # typing indicator BEFORE AI call
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action=ChatAction.TYPING
+        )
+
         response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=messages,
@@ -168,16 +178,8 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         reply = response.choices[0].message.content.strip()
 
-        # -------------------------
-        # TYPING INDICATOR (SMART)
-        # -------------------------
-        if len(reply) > 40:
-            await context.bot.send_chat_action(
-                chat_id=update.effective_chat.id,
-                action=ChatAction.TYPING
-            )
-
         history.append({"role": "assistant", "content": reply})
+        history = history[-200:]
         save_memory(uid, history)
 
         await update.message.reply_text(reply)
