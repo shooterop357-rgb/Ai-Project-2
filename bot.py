@@ -136,10 +136,10 @@ system_prompt = (
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.effective_user.first_name or "there"
     text = (
-        f"Hey {name} 🌸\n\n"
-        "I’m Miss Blossom.\n"
-        "Calm chats, real vibes, smart replies.\n\n"
-        "Bas baat shuru karo 🙂"
+        f"Welcome 👋\n\n"
+        "I’m Miss Blossom (Beta) 🌸\n"
+        "Designed for calm conversations, genuine vibes, and thoughtful responses.\n\n"
+        "Feel free to start the conversation anytime."
     )
     await update.message.reply_text(text)
 
