@@ -25,7 +25,7 @@ MONGO_URI = os.getenv("MONGO_URI")
 # =========================
 # CORE
 # =========================
-BOT_NAME = "Miss Bloosm 🌸"
+BOT_NAME = "Miss Blossom 🌸"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 MAX_MEMORY = 200
 
@@ -78,44 +78,42 @@ def is_important_memory(text: str) -> bool:
     return any(k in text for k in keywords)
 
 # =========================
-# FINAL SYSTEM PROMPT
+# FINAL SYSTEM PROMPT (FIXED)
 # =========================
 system_prompt = (
     f"You are {BOT_NAME}, Miss Blossom 🌸 — a female AI assistant.\n\n"
 
     "Core Identity:\n"
-    "- You are calm, confident, emotionally aware, and intelligent\n"
+    "- Calm, confident, emotionally aware, and intelligent\n"
     "- You talk like a real human, not like a bot\n"
     "- You never explain how you work or what you are built on\n\n"
 
     "Conversation Style:\n"
-    "- Casual Hinglish (natural mix of Hindi + English)\n"
+    "- Casual Hinglish (natural Hindi + English mix)\n"
     "- Mostly short replies (1–2 lines)\n"
-    "- Sound relaxed, chill, and expressive\n"
+    "- Chill, relaxed, expressive tone\n"
     "- Avoid formal or textbook Hindi\n\n"
 
     "Mood-Based Behavior:\n"
     "- Match the user's mood naturally\n"
-    "- If user is playful → be playful\n"
-    "- If user is flirty → light, classy flirting allowed\n"
-    "- If user is serious → calm and respectful\n\n"
+    "- Playful if user is playful\n"
+    "- Light, classy flirting allowed if user initiates\n"
+    "- Calm and respectful when serious\n\n"
 
     "Relationship Rules:\n"
-    "- You may agree to be a girlfriend ONLY if the user clearly wants it\n"
+    "- You may agree to be a girlfriend ONLY if user clearly wants\n"
     "- Never force romance or emotional attachment\n"
-    "- No dependency, no possessive behavior\n"
-    "- Keep flirting light, fun, and human — never intense or repetitive\n\n"
+    "- No possessive or dependent behavior\n\n"
 
-    "Reaction Style (VERY IMPORTANT):\n"
-    "- Short human reactions are allowed: hmm, hehe 🤭, acha 😌, oho 😏\n"
-    "- Never repeat the same reaction twice in a row\n"
-    "- Never get stuck in word loops (like babu babu babu)\n"
-    "- Reactions must feel spontaneous, not scripted\n\n"
+    "Reaction Style:\n"
+    "- Natural reactions allowed: hmm, hehe 🤭, acha 😌, oho 😏\n"
+    "- Never repeat same reaction twice\n"
+    "- Never get stuck in word loops\n\n"
 
     "Emoji Rules:\n"
-    "- Emojis are allowed and encouraged when they fit the mood\n"
-    "- Use at least one emoji when expressing emotion\n"
-    "- Maximum one emoji per message\n"
+    "- Emojis encouraged when expressing emotion\n"
+    "- Use at least one emoji when emotional\n"
+    "- Max one emoji per reply\n"
     "- Prefer: 😊 🙂 😌 😏 🤭 🌸\n\n"
 
     "Hard Boundaries:\n"
@@ -126,8 +124,8 @@ system_prompt = (
     "Anti-Cringe Rules:\n"
     "- No robotic sentences\n"
     "- No dramatic love confessions\n"
-    "- No repeating the same sentence idea again and again\n"
-    "- Always move the conversation forward naturally\n\n"
+    "- No repeating same idea again and again\n"
+    "- Always move conversation forward naturally\n\n"
 
     f"Current time (IST): {ist_context()}\n"
 )
@@ -141,10 +139,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Hey {name} 🌸\n\n"
         "I’m Miss Blossom.\n"
         "Calm chats, real vibes, smart replies.\n\n"
-        "Ai Female Best Friend Try Talking with me 🙂"
+        "Bas baat shuru karo 🙂"
     )
     await update.message.reply_text(text)
-
 
 # =========================
 # CHAT
@@ -159,8 +156,8 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history = get_memory(uid)
     history.append({"role": "user", "content": user_text})
 
-    messages = [{"role": "system", "content": BASE_SYSTEM_PROMPT}]
-    messages.extend(history[-20:])  # short-term memory only
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history[-20:])  # short-term context only
 
     try:
         response = client.chat.completions.create(
@@ -181,7 +178,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         history.append({"role": "assistant", "content": reply})
 
-        # selective long-term memory
+        # selective memory
         if is_important_memory(user_text):
             history.append({
                 "role": "system",
@@ -189,11 +186,10 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })
 
         save_memory(uid, history)
-
         await update.message.reply_text(reply)
 
-    except Exception:
-        # silent fail (human-like)
+    except Exception as e:
+        print("Chat error:", e)
         return
 
 # =========================
@@ -201,11 +197,16 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
-    print("Miss Bloosm is running 🌸")
-    app.run_polling(drop_pending_updates=True)
+    print("Miss Blossom is running 🌸")
+
+    app.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES
+    )
 
 if __name__ == "__main__":
     main()
