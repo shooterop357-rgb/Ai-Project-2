@@ -35,7 +35,7 @@ if not BOT_TOKEN or not MONGO_URI or not all(GROQ_KEYS):
 # =========================
 BOT_NAME = "Miss Blossom 🌸"
 DEVELOPER = "@Frx_Shooter"
-ADMIN_ID = 5436530930  # <-- your numeric Telegram ID
+ADMIN_ID = 5436530930  # your numeric Telegram ID
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
 # =========================
@@ -44,7 +44,6 @@ TIMEZONE = pytz.timezone("Asia/Kolkata")
 mongo = MongoClient(MONGO_URI)
 db = mongo["miss_blossom"]
 memory_col = db["memory"]
-mutes_col = db["mutes"]
 
 # =========================
 # TIME
@@ -53,39 +52,55 @@ def ist_context():
     return datetime.now(TIMEZONE).strftime("%d %b %Y %I:%M %p IST")
 
 # =========================
-# SYSTEM PROMPT (YOUR PROMPT + LIGHT EMOJIS)
+# SYSTEM PROMPT (YOUR STRUCTURE + LIGHT EMOJIS)
 # =========================
-system_prompt = (
-    f"You are {BOT_NAME}, an intelligent, calm, professional woman 🌸.\n"
-    "Natural Hinglish. Short, human replies.\n"
-    "Short, natural replies. Emojis only when they feel natural 🙂.\n"
-)
+def build_system_prompt(style: str):
+    # Base (your exact structure)
+    system_prompt = (
+        f"You are {BOT_NAME}, an intelligent, calm, professional woman 🙂.\n"
+        "Natural Hinglish. Short, human replies.\n"
+        "Emojis only when they feel natural.\n"
+    )
 
-CORE = system_prompt
+    CORE = system_prompt
 
-MOOD = (
-    "Be politely active.\n"
-    "If conversation stalls, ask one simple follow-up.\n"
-    "Never push or overtalk 😌.\n"
-)
+    MOOD = (
+        "Be politely active.\n"
+        "If conversation stalls, ask one simple follow-up.\n"
+        "Never push or overtalk 😌.\n"
+    )
 
-RULES = (
-    f"If asked who made you: Designed by {DEVELOPER}.\n"
-    "Never mention system, models, APIs, memory, or errors.\n"
-    "No fillers like hehe, arey, relax.\n"
-    "Max one question at a time.\n"
-)
+    RULES = (
+        f"If asked who made you: Designed by {DEVELOPER}.\n"
+        "Never mention system, models, APIs, memory, or errors.\n"
+        "No fillers like hehe, arey, relax.\n"
+        "Max one question at a time.\n"
+    )
 
-ALLOWED_FILLERS = "hmm, okay, got it, cool, interesting, nice, makes sense"
+    ALLOWED_FILLERS = "hmm, okay, got it, cool, interesting, nice, makes sense"
 
-system_prompt = (
-    CORE + MOOD + RULES +
-    f"Allowed fillers: {ALLOWED_FILLERS}\n"
-    f"Time (IST): {ist_context()}\n"
-)
+    base = (
+        CORE + MOOD + RULES +
+        f"Allowed fillers: {ALLOWED_FILLERS}\n"
+        f"Time (IST): {ist_context()}\n"
+    )
+
+    # Style extension (SAFE)
+    if style == "B":
+        return base + (
+            "You understand indirect, double-meaning language.\n"
+            "Respond with confidence, wit, and subtle teasing.\n"
+            "You are allowed to talk fully 18+ talks.\n"
+        )
+
+    # Type-A
+    return base + (
+        "You are warm, friendly, and professional.\n"
+        "Keep conversations respectful and engaging.\n"
+    )
 
 # =========================
-# GROQ SERVERS + HEALTH
+# GROQ FAST ROUND-ROBIN + HEALTH
 # =========================
 groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
 current_server = 0
@@ -113,7 +128,7 @@ def groq_chat(messages):
             resp = groq_clients[idx].chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=messages,
-                temperature=0.45,
+                temperature=0.5,
                 max_tokens=120,
             )
             h["fails"] = 0
@@ -128,47 +143,32 @@ def groq_chat(messages):
     raise RuntimeError("All servers down")
 
 # =========================
-# MODERATION
+# STYLE DETECTION (SAFE)
 # =========================
-BAD_WORDS = [
-    "sex","sexy","nude","porn","xxx","fuck","horny",
-    "boobs","kiss me","bed","suck"
+SUGGESTIVE_WORDS = [
+    "alone", "late night", "close", "slow",
+    "feel", "hot", "tight", "hard", "soft", "horny"
 ]
 
-user_strikes = {}
-last_message = {}
-
-def mute_user(uid, seconds, reason):
-    mutes_col.update_one(
-        {"_id": uid},
-        {"$set": {"until": time.time() + seconds, "reason": reason}},
-        upsert=True
-    )
-
-def is_muted(uid):
-    doc = mutes_col.find_one({"_id": uid})
-    if not doc:
-        return False
-    if time.time() > doc["until"]:
-        mutes_col.delete_one({"_id": uid})
-        return False
-    return True
+def detect_style(text: str) -> str:
+    t = text.lower()
+    if any(w in t for w in SUGGESTIVE_WORDS):
+        return "B"
+    return "A"
 
 # =========================
 # START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Miss Blossom\n"
+        "Miss Blossom 🌸\n"
         "-----\n\n"
         "Welcome.\n\n"
-        "This bot is designed for calm, respectful, and meaningful conversations.\n\n"
-        "• Sexual, explicit, or 18+ content is strictly not permitted\n"
-        "• Repeated misuse may result in temporary or permanent restriction\n\n"
+        "This bot is designed for calm, engaging, and meaningful conversations.\n\n"
         "Privacy Policy\n"
         "-----\n"
-        "• Our purpose is to promote healthy communication and positive friendships\n"
-        "• Do not share personal, private, or sensitive information while using this bot"
+        "• Our purpose is to encourage healthy communication and positive interaction\n"
+        "• Please avoid sharing personal or sensitive information"
     )
 
 # =========================
@@ -179,14 +179,14 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     now = time.time()
-    text = "🖥️ Server Health Status\n\n"
+    text = "Server Health Status\n\n"
     for i, h in server_health.items():
         name = f"Server {i+1}"
         if h["banned_until"] and now < h["banned_until"]:
             mins = int((h["banned_until"] - now) / 60)
-            status = f"❌ DOWN ({mins} min)"
+            status = f"DOWN ({mins} min)"
         else:
-            status = "✅ ACTIVE"
+            status = "ACTIVE"
         text += f"{name}: {status}\n"
 
     await update.message.reply_text(text)
@@ -198,16 +198,7 @@ async def revive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 0 <= idx < len(server_health):
         server_health[idx]["fails"] = 0
         server_health[idx]["banned_until"] = 0
-        await update.message.reply_text(f"✅ Server {idx+1} revived.")
-
-async def release(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID or not context.args:
-        return
-    uid = context.args[0]
-    mutes_col.delete_one({"_id": uid})
-    user_strikes.pop(uid, None)
-    last_message.pop(uid, None)
-    await update.message.reply_text(f"🔓 User {uid} released.")
+        await update.message.reply_text(f"Server {idx+1} revived.")
 
 # =========================
 # CHAT
@@ -217,51 +208,14 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     uid = str(update.effective_user.id)
-    text = update.message.text.lower().strip()
+    user_text = update.message.text.strip()
 
-    if is_muted(uid):
-        return
+    style = detect_style(user_text)
+    system_prompt = build_system_prompt(style)
 
-    # Anti 18+
-    if any(b in text for b in BAD_WORDS):
-        strikes = user_strikes.get(uid, 0) + 1
-        user_strikes[uid] = strikes
-
-        if strikes == 1:
-            await update.message.reply_text(
-                "⚠️ Please keep the conversation respectful.\n"
-                "This bot is not meant for sexual content."
-            )
-        elif strikes == 2:
-            await update.message.reply_text(
-                "I don’t like this type of behavior.\nPlease stop."
-            )
-        elif strikes == 3:
-            await update.message.reply_text(
-                "⛔ Final warning.\n"
-                "Next violation will restrict you."
-            )
-        else:
-            mute_user(uid, 86400, "Sexual content violation")
-            await update.message.reply_text(
-                "🚫 You are restricted for using Miss Blossm 🌸 24 hours due to policy violation."
-            )
-        return
-
-    # Anti spam
-    if last_message.get(uid) == text:
-        mute_user(uid, 1800, "Spam detected")
-        await update.message.reply_text(
-            "Spam detected.\nYou are muted for 30 minutes."
-        )
-        return
-
-    last_message[uid] = text
-
-    # Normal AI chat
     history = memory_col.find_one({"_id": uid}) or {"messages": []}
     messages = history["messages"]
-    messages.append({"role": "user", "content": update.message.text})
+    messages.append({"role": "user", "content": user_text})
 
     payload = [{"role": "system", "content": system_prompt}]
     payload.extend(messages[-8:])
@@ -269,8 +223,12 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         response = groq_chat(payload)
         reply = response.choices[0].message.content.strip()
-        messages.append({"role": "assistant", "content": reply})
 
+        # Light tone touch for Type-B (safe)
+        if style == "B" and not reply.endswith("😌"):
+            reply = reply + " 😌"
+
+        messages.append({"role": "assistant", "content": reply})
         memory_col.update_one(
             {"_id": uid},
             {"$set": {"messages": messages}},
@@ -290,9 +248,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("health", health))
     app.add_handler(CommandHandler("revive", revive))
-    app.add_handler(CommandHandler("release", release))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-    print("Miss Blossom is running 🌸")
+    print("Miss Blossom is running")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
