@@ -159,12 +159,16 @@ def is_muted(uid):
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Miss Blossom 🌸\n\n"
-        "Welcome.\n"
-        "This bot is for calm, respectful conversations.\n\n"
-        "❌ Sexting / 18+ content is not allowed.\n\n"
-        "Privacy Policy:\n"
-        "Our Purpose to Make a Healthy Chat & Friendship."
+        "Miss Blossom\n"
+        "-----\n\n"
+        "Welcome.\n\n"
+        "This bot is designed for calm, respectful, and meaningful conversations.\n\n"
+        "• Sexual, explicit, or 18+ content is strictly not permitted\n"
+        "• Repeated misuse may result in temporary or permanent restriction\n\n"
+        "Privacy Policy\n"
+        "-----\n"
+        "• Our purpose is to promote healthy communication and positive friendships\n"
+        "• Do not share personal, private, or sensitive information while using this bot"
     )
 
 # =========================
@@ -240,7 +244,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             mute_user(uid, 86400, "Sexual content violation")
             await update.message.reply_text(
-                "🚫 You are restricted for 24 hours due to policy violation."
+                "🚫 You are restricted for using Miss Blossm 🌸 24 hours due to policy violation."
             )
         return
 
