@@ -97,6 +97,8 @@ system_prompt = (
     "Short, natural replies. Emojis only when they feel natural.\n"
 )
 
+CORE = system_prompt  # ✅ FIX (important)
+
 MOOD = (
     "Be politely active.\n"
     "If conversation stalls, ask one simple follow-up.\n"
