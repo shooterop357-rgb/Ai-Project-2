@@ -105,12 +105,9 @@ RULES = (
     "No fluff. No repetition. No slang.\n"
 )
 
-system_prompt = CORE + MOOD + RULES + f"Time (IST): {ist_context()}\n"
-)
-
 system_prompt = (
     CORE + MOOD + RULES +
-    f"Time: {ist_context()}\n"
+    f"Time (IST): {ist_context()}\n"
 )
 
 # =========================
