@@ -1,4 +1,5 @@
 import os
+import time
 from datetime import datetime
 import pytz
 
@@ -19,13 +20,14 @@ from pymongo import MongoClient
 # ENV
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+MONGO_URI = os.getenv("MONGO_URI")
+
 GROQ_KEYS = [
     os.getenv("GROQ_API_KEY_1"),
     os.getenv("GROQ_API_KEY_2"),
     os.getenv("GROQ_API_KEY_3"),
     os.getenv("GROQ_API_KEY_4"),
 ]
-MONGO_URI = os.getenv("MONGO_URI")
 
 if not BOT_TOKEN or not MONGO_URI or not all(GROQ_KEYS):
     raise RuntimeError("Missing environment variables")
@@ -39,23 +41,52 @@ TIMEZONE = pytz.timezone("Asia/Kolkata")
 MAX_MEMORY = 200
 
 # =========================
-# GROQ CLIENTS (4 KEYS)
+# GROQ CLIENTS + HEALTH
 # =========================
 groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
 
+KEY_COOLDOWN = 900  # 15 min
+MAX_FAILS = 3       # after this → cooldown
+
+key_health = {
+    i: {"fails": 0, "last_used": None, "cooldown": 0}
+    for i in range(len(groq_clients))
+}
+
 def groq_chat(messages):
-    for client in groq_clients:
+    now = time.time()
+
+    for idx, client in enumerate(groq_clients):
+        health = key_health[idx]
+
+        # skip unhealthy key
+        if health["cooldown"] and now < health["cooldown"]:
+            continue
+
         try:
-            # No retry, no sleep → instant switch
-            return client.chat.completions.create(
+            response = client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=messages,
                 temperature=0.45,
                 max_tokens=120,
             )
+
+            # success → reset health
+            health["fails"] = 0
+            health["cooldown"] = 0
+            health["last_used"] = datetime.now(TIMEZONE)
+
+            return response
+
         except Exception:
+            health["fails"] += 1
+
+            if health["fails"] >= MAX_FAILS:
+                health["cooldown"] = now + KEY_COOLDOWN
+
             continue
-    raise RuntimeError("All Groq keys exhausted")
+
+    raise RuntimeError("All Groq keys unavailable")
 
 # =========================
 # DATABASE
@@ -147,7 +178,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history.append({"role": "user", "content": user_text})
 
     messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history[-16:])  # strict token control
+    messages.extend(history[-16:])
 
     try:
         response = groq_chat(messages)
