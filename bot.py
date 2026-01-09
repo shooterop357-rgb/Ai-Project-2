@@ -19,11 +19,15 @@ from pymongo import MongoClient
 # ENV
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_API_KEY_1 = os.getenv("GROQ_API_KEY_1")
-GROQ_API_KEY_2 = os.getenv("GROQ_API_KEY_2")
+GROQ_KEYS = [
+    os.getenv("GROQ_API_KEY_1"),
+    os.getenv("GROQ_API_KEY_2"),
+    os.getenv("GROQ_API_KEY_3"),
+    os.getenv("GROQ_API_KEY_4"),
+]
 MONGO_URI = os.getenv("MONGO_URI")
 
-if not all([BOT_TOKEN, GROQ_API_KEY_1, GROQ_API_KEY_2, MONGO_URI]):
+if not BOT_TOKEN or not MONGO_URI or not all(GROQ_KEYS):
     raise RuntimeError("Missing environment variables")
 
 # =========================
@@ -35,25 +39,23 @@ TIMEZONE = pytz.timezone("Asia/Kolkata")
 MAX_MEMORY = 200
 
 # =========================
-# GROQ CLIENTS
+# GROQ CLIENTS (4 KEYS)
 # =========================
-groq_clients = [
-    Groq(api_key=GROQ_API_KEY_1),
-    Groq(api_key=GROQ_API_KEY_2),
-]
+groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
 
 def groq_chat(messages):
     for client in groq_clients:
         try:
+            # No retry, no sleep → instant switch
             return client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=messages,
                 temperature=0.45,
-                max_tokens=120,  # token optimized
+                max_tokens=120,
             )
         except Exception:
             continue
-    raise RuntimeError("Groq failed")
+    raise RuntimeError("All Groq keys exhausted")
 
 # =========================
 # DATABASE
@@ -87,9 +89,9 @@ def is_important_memory(text: str) -> bool:
     return any(k in text.lower() for k in keys)
 
 # =========================
-# MODULAR SYSTEM PROMPT (TOKEN LIGHT)
+# SYSTEM PROMPT (TOKEN LIGHT)
 # =========================
-CORE = (
+system_prompt = (
     f"You are {BOT_NAME}, an intelligent, calm, professional woman.\n"
     "Natural Hinglish. Short, human replies.\n"
     "Short, natural replies. Emojis only when they feel natural.\n"
@@ -117,6 +119,7 @@ system_prompt = (
     f"Allowed fillers: {ALLOWED_FILLERS}\n"
     f"Time (IST): {ist_context()}\n"
 )
+
 # =========================
 # START
 # =========================
@@ -142,7 +145,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history.append({"role": "user", "content": user_text})
 
     messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history[-18:])  # token control
+    messages.extend(history[-16:])  # strict token control
 
     try:
         response = groq_chat(messages)
@@ -163,7 +166,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
 
     except Exception:
-        return  # silent fail (as requested)
+        return  # silent fail
 
 # =========================
 # MAIN
