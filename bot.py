@@ -4,7 +4,6 @@ from datetime import datetime
 import pytz
 
 from telegram import Update
-from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -33,6 +32,11 @@ if not BOT_TOKEN or not MONGO_URI or not all(GROQ_KEYS):
     raise RuntimeError("Missing environment variables")
 
 # =========================
+# ADMIN
+# =========================
+ADMIN_ID = 5436530930  # <-- apna Telegram ID
+
+# =========================
 # CORE
 # =========================
 BOT_NAME = "Miss Blossom 🌸"
@@ -45,44 +49,51 @@ MAX_MEMORY = 200
 # =========================
 groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
 
-KEY_COOLDOWN = 900  # 15 min
-MAX_FAILS = 3       # after this → cooldown
+MAX_FAILS = 2
+BAN_TIME = 86400  # 24 HOURS
 
 key_health = {
-    i: {"fails": 0, "last_used": None, "cooldown": 0}
+    i: {
+        "fails": 0,
+        "banned_until": 0
+    }
     for i in range(len(groq_clients))
 }
 
+current_key = 0
+
 def groq_chat(messages):
+    global current_key
     now = time.time()
 
-    for idx, client in enumerate(groq_clients):
+    for _ in range(len(groq_clients)):
+        idx = current_key % len(groq_clients)
+        current_key += 1
+
         health = key_health[idx]
 
-        # skip unhealthy key
-        if health["cooldown"] and now < health["cooldown"]:
+        # skip banned key
+        if health["banned_until"] and now < health["banned_until"]:
             continue
 
         try:
-            response = client.chat.completions.create(
+            response = groq_clients[idx].chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=messages,
-                temperature=0.45,
-                max_tokens=120,
+                temperature=0.4,
+                max_tokens=80,
             )
 
-            # success → reset health
+            # success → reset
             health["fails"] = 0
-            health["cooldown"] = 0
-            health["last_used"] = datetime.now(TIMEZONE)
-
+            health["banned_until"] = 0
             return response
 
         except Exception:
             health["fails"] += 1
 
             if health["fails"] >= MAX_FAILS:
-                health["cooldown"] = now + KEY_COOLDOWN
+                health["banned_until"] = now + BAN_TIME
 
             continue
 
@@ -114,10 +125,6 @@ def save_memory(uid, messages):
         {"$set": {"messages": messages[-MAX_MEMORY:]}},
         upsert=True
     )
-
-def is_important_memory(text: str) -> bool:
-    keys = ["mera naam", "i am", "i live", "i like", "exam", "job", "college", "relationship"]
-    return any(k in text.lower() for k in keys)
 
 # =========================
 # SYSTEM PROMPT (TOKEN LIGHT)
@@ -154,16 +161,51 @@ system_prompt = (
 )
 
 # =========================
+# ADMIN COMMANDS
+# =========================
+async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    now = time.time()
+    text = "🔑 **Groq Key Health**\n\n"
+
+    for i, h in key_health.items():
+        if h["banned_until"] and now < h["banned_until"]:
+            mins = int((h["banned_until"] - now) / 60)
+            status = f"❌ BANNED ({mins} min left)"
+        else:
+            status = "✅ ACTIVE"
+
+        text += f"Key {i+1}: {status}\n"
+
+    await update.message.reply_text(text)
+
+async def revive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if not context.args:
+        return
+
+    try:
+        idx = int(context.args[0]) - 1
+        key_health[idx]["fails"] = 0
+        key_health[idx]["banned_until"] = 0
+        await update.message.reply_text(f"✅ Key {idx+1} revived.")
+    except:
+        pass
+
+# =========================
 # START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Welcome 👋\n\n"
-        "I’m Miss Blossom (Beta) 🌸\n"
-        "Calm chats, real vibes.\n\n"
-        "You can start anytime 🙂"
+        "Miss Blossom 🌸 online.\n\n"
+        "I’m here for calm conversations, genuine talks, and meaningful chats.\n"
+        "Not for sexting or explicit 18+ content.\n\n"
+        "You can start chatting anytime 🙂"
     )
-
 # =========================
 # CHAT
 # =========================
@@ -172,43 +214,32 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     uid = str(update.effective_user.id)
-    user_text = update.message.text.strip()
-
     history = get_memory(uid)
-    history.append({"role": "user", "content": user_text})
+    history.append({"role": "user", "content": update.message.text})
 
     messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history[-16:])
+    messages.extend(history[-8:])
 
     try:
         response = groq_chat(messages)
         reply = response.choices[0].message.content.strip()
-
-        if len(reply) > 30:
-            await context.bot.send_chat_action(
-                chat_id=update.effective_chat.id,
-                action=ChatAction.TYPING
-            )
-
         history.append({"role": "assistant", "content": reply})
-
-        if is_important_memory(user_text):
-            history.append({"role": "system", "content": "Remember user info."})
-
         save_memory(uid, history)
         await update.message.reply_text(reply)
-
-    except Exception:
-        return  # silent fail
+    except:
+        return
 
 # =========================
 # MAIN
 # =========================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("health", health))
+    app.add_handler(CommandHandler("revive", revive))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-    print("Miss Blossom is running 🌸")
+
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
