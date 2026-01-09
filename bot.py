@@ -1,6 +1,5 @@
 import os
 import time
-import random
 from datetime import datetime
 import pytz
 
@@ -21,7 +20,6 @@ from pymongo import MongoClient
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
-
 GROQ_KEYS = [
     os.getenv("GROQ_API_KEY_1"),
     os.getenv("GROQ_API_KEY_2"),
@@ -33,15 +31,11 @@ if not BOT_TOKEN or not MONGO_URI or not all(GROQ_KEYS):
     raise RuntimeError("Missing environment variables")
 
 # =========================
-# ADMIN
-# =========================
-ADMIN_ID = 5436530930  # your Telegram numeric ID
-
-# =========================
 # CORE
 # =========================
 BOT_NAME = "Miss Blossom 🌸"
 DEVELOPER = "@Frx_Shooter"
+ADMIN_ID = 5436530930  # <-- your numeric Telegram ID
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
 # =========================
@@ -50,6 +44,7 @@ TIMEZONE = pytz.timezone("Asia/Kolkata")
 mongo = MongoClient(MONGO_URI)
 db = mongo["miss_blossom"]
 memory_col = db["memory"]
+mutes_col = db["mutes"]
 
 # =========================
 # TIME
@@ -93,10 +88,9 @@ system_prompt = (
 # GROQ SERVERS + HEALTH
 # =========================
 groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
-
-MAX_FAILS = 2
-BAN_TIME = 86400
 current_server = 0
+MAX_FAILS = 2
+BAN_TIME = 1800
 
 server_health = {
     i: {"fails": 0, "banned_until": 0}
@@ -134,35 +128,43 @@ def groq_chat(messages):
     raise RuntimeError("All servers down")
 
 # =========================
-# SAFETY LOGIC
+# MODERATION
 # =========================
 BAD_WORDS = [
     "sex","sexy","nude","porn","xxx","fuck","horny",
     "boobs","kiss me","bed","suck"
 ]
 
-SAVAGE_REPLIES = [
-    "Bas. Ab yahan baat khatam 🙂",
-    "Ye line kaam nahi karegi.",
-    "Thoda level rakho 😌",
-    "Enough. Move on."
-]
-
 user_strikes = {}
-muted_users = {}      # uid -> mute_until
-savage_sent = set()   # uid who already got savage
 last_message = {}
 
-MUTE_TIME = 86400
+def mute_user(uid, seconds, reason):
+    mutes_col.update_one(
+        {"_id": uid},
+        {"$set": {"until": time.time() + seconds, "reason": reason}},
+        upsert=True
+    )
+
+def is_muted(uid):
+    doc = mutes_col.find_one({"_id": uid})
+    if not doc:
+        return False
+    if time.time() > doc["until"]:
+        mutes_col.delete_one({"_id": uid})
+        return False
+    return True
 
 # =========================
 # START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Miss Blossom 🌸 online.\n\n"
-        "Calm, respectful conversations only.\n"
-        "❌ Not for sexting or 18+ content."
+        "Miss Blossom 🌸\n\n"
+        "Welcome.\n"
+        "This bot is for calm, respectful conversations.\n\n"
+        "❌ Sexting / 18+ content is not allowed.\n\n"
+        "Privacy Policy:\n"
+        "Our Purpose to Make a Healthy Chat & Friendship."
     )
 
 # =========================
@@ -173,8 +175,7 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     now = time.time()
-    text = "🖥️ Server Health\n\n"
-
+    text = "🖥️ Server Health Status\n\n"
     for i, h in server_health.items():
         name = f"Server {i+1}"
         if h["banned_until"] and now < h["banned_until"]:
@@ -195,6 +196,15 @@ async def revive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         server_health[idx]["banned_until"] = 0
         await update.message.reply_text(f"✅ Server {idx+1} revived.")
 
+async def release(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID or not context.args:
+        return
+    uid = context.args[0]
+    mutes_col.delete_one({"_id": uid})
+    user_strikes.pop(uid, None)
+    last_message.pop(uid, None)
+    await update.message.reply_text(f"🔓 User {uid} released.")
+
 # =========================
 # CHAT
 # =========================
@@ -204,46 +214,49 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     uid = str(update.effective_user.id)
     text = update.message.text.lower().strip()
-    now = time.time()
 
-    # muted logic
-    if uid in muted_users:
-        if now < muted_users[uid]:
-            if uid not in savage_sent:
-                await update.message.reply_text(random.choice(SAVAGE_REPLIES))
-                savage_sent.add(uid)
-            return
-        else:
-            del muted_users[uid]
-            savage_sent.discard(uid)
-            user_strikes.pop(uid, None)
-
-    # repeated spam
-    if last_message.get(uid) == text:
-        muted_users[uid] = now + MUTE_TIME
-        savage_sent.discard(uid)
+    if is_muted(uid):
         return
 
-    last_message[uid] = text
-
-    # sexting logic (3 warnings)
+    # Anti 18+
     if any(b in text for b in BAD_WORDS):
         strikes = user_strikes.get(uid, 0) + 1
         user_strikes[uid] = strikes
 
         if strikes == 1:
-            await update.message.reply_text("⚠️ Warning: Not for sexual or 18+ talk.")
+            await update.message.reply_text(
+                "⚠️ Please keep the conversation respectful.\n"
+                "This bot is not meant for sexual content."
+            )
         elif strikes == 2:
-            await update.message.reply_text("⛔ Final warning. Stop now.")
+            await update.message.reply_text(
+                "I don’t like this type of behavior.\nPlease stop."
+            )
+        elif strikes == 3:
+            await update.message.reply_text(
+                "⛔ Final warning.\n"
+                "Next violation will restrict you."
+            )
         else:
-            muted_users[uid] = now + MUTE_TIME
-            savage_sent.discard(uid)
+            mute_user(uid, 86400, "Sexual content violation")
+            await update.message.reply_text(
+                "🚫 You are restricted for 24 hours due to policy violation."
+            )
         return
 
-    # normal AI chat
+    # Anti spam
+    if last_message.get(uid) == text:
+        mute_user(uid, 1800, "Spam detected")
+        await update.message.reply_text(
+            "Spam detected.\nYou are muted for 30 minutes."
+        )
+        return
+
+    last_message[uid] = text
+
+    # Normal AI chat
     history = memory_col.find_one({"_id": uid}) or {"messages": []}
     messages = history["messages"]
-
     messages.append({"role": "user", "content": update.message.text})
 
     payload = [{"role": "system", "content": system_prompt}]
@@ -273,6 +286,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("health", health))
     app.add_handler(CommandHandler("revive", revive))
+    app.add_handler(CommandHandler("release", release))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
     print("Miss Blossom is running 🌸")
     app.run_polling(drop_pending_updates=True)
