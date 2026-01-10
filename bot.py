@@ -112,19 +112,6 @@ def groq_chat(messages):
 
     raise RuntimeError("All servers down")
 
-# =========================
-# STYLE DETECTION
-# =========================
-SUGGESTIVE_WORDS = [
-    "alone", "late night", "close", "slow",
-    "feel", "hot", "tight", "hard", "soft", "horny"
-]
-
-def detect_style(text: str) -> str:
-    t = text.lower()
-    if any(w in t for w in SUGGESTIVE_WORDS):
-        return "B"
-    return "A"
 
 # =========================
 # START
@@ -150,7 +137,7 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     now = time.time()
-    text = "🩺 Server Health Status\n\n"
+    text = "🖥️ Server Health Status\n\n"
 
     for i, h in server_health.items():
         name = f"Server {i+1}"
@@ -182,8 +169,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     user_text = update.message.text.strip()
 
-    style = detect_style(user_text)
-    system_prompt = build_system_prompt(style)
+    system_prompt = SYSTEM_PROMPT
 
     history = memory_col.find_one({"_id": uid}) or {"messages": []}
     messages = history["messages"]
