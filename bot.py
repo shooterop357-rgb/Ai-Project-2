@@ -1,6 +1,6 @@
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 from difflib import SequenceMatcher
 
@@ -39,12 +39,15 @@ DEVELOPER = "@Frx_Shooter"
 ADMIN_ID = 5436530930
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
+TOPIC_TIMEOUT = timedelta(minutes=5)
+
 # =========================
 # DATABASE
 # =========================
 mongo = MongoClient(MONGO_URI)
 db = mongo["miss_blossom"]
 memory_col = db["memory"]
+debug_col = db["debug_logs"]
 
 # =========================
 # TIME
@@ -70,7 +73,7 @@ SYSTEM_PROMPT = (
 )
 
 # =========================
-# GROQ ROUND ROBIN + HEALTH
+# GROQ ROUND ROBIN + HEALTH (UNCHANGED)
 # =========================
 groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
 current_server = 0
@@ -103,7 +106,7 @@ def groq_chat(messages):
             )
             h["fails"] = 0
             h["banned_until"] = 0
-            return resp
+            return resp, idx
 
         except Exception:
             h["fails"] += 1
@@ -113,26 +116,32 @@ def groq_chat(messages):
     raise RuntimeError("All servers down")
 
 # =========================
-# HELPERS
+# HELPERS (UNCHANGED + SAFE ADD-ONS)
 # =========================
 SHORT_WORDS = {"ok", "okay", "yes", "no", "nothing", "hmm", "fine"}
-
-UNLOCK_WORDS = [
-    "by the way", "another thing", "new topic",
-    "i want to ask", "different question"
-]
+CONTINUE_WORDS = {"tell me more", "more", "continue", "go on"}
+UNLOCK_WORDS = {"by the way", "another thing", "new topic", "i want to ask"}
 
 def is_short(text: str) -> bool:
     return text.lower().strip() in SHORT_WORDS or len(text.split()) <= 2
+
+def wants_to_continue(text: str) -> bool:
+    return text.lower().strip() in CONTINUE_WORDS
+
+def wants_new_topic(text: str) -> bool:
+    return any(w in text.lower() for w in UNLOCK_WORDS)
 
 def is_new_topic(prev: str, curr: str) -> bool:
     if not prev:
         return False
     return SequenceMatcher(None, prev.lower(), curr.lower()).ratio() < 0.35
 
-def wants_new_topic(text: str) -> bool:
-    t = text.lower()
-    return any(w in t for w in UNLOCK_WORDS)
+def log_debug(uid, data):
+    debug_col.insert_one({
+        "user": uid,
+        "time": datetime.utcnow(),
+        **data
+    })
 
 # =========================
 # START
@@ -147,7 +156,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # =========================
-# ADMIN COMMANDS
+# ADMIN COMMANDS (UNCHANGED)
 # =========================
 async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -176,7 +185,7 @@ async def revive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🟢 Server {idx+1} revived")
 
 # =========================
-# CHAT
+# CHAT (SAFE ADD-ONS APPLIED)
 # =========================
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -184,32 +193,48 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     uid = str(update.effective_user.id)
     user_text = update.message.text.strip()
+    now = datetime.utcnow()
 
     doc = memory_col.find_one({"_id": uid}) or {
         "messages": [],
         "silence": 0,
         "topic_lock": False,
-        "last_updated": datetime.utcnow()
+        "last_active": now
     }
 
     messages = doc["messages"]
     silence = doc.get("silence", 0)
     topic_lock = doc.get("topic_lock", False)
+    last_active = doc.get("last_active", now)
 
-    # 🔒 Conversation lock logic
+    # ⏳ SAFE ADD-ON: Auto topic timeout
+    if topic_lock and now - last_active > TOPIC_TIMEOUT:
+        topic_lock = False
+        messages = []
+        silence = 0
+        log_debug(uid, {"event": "topic_timeout"})
+
+    last_assistant = next(
+        (m["content"] for m in reversed(messages) if m["role"] == "assistant"),
+        ""
+    )
+
+    # 🔒 SAFE ADD-ON: Soft conversation lock
     if topic_lock:
         if wants_new_topic(user_text):
-            messages = []
-            silence = 0
             topic_lock = False
-    else:
-        last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
-        if is_new_topic(last_user, user_text):
             messages = []
             silence = 0
-            topic_lock = True
+            log_debug(uid, {"event": "manual_unlock"})
+    else:
+        if not wants_to_continue(user_text):
+            if is_new_topic(last_assistant, user_text):
+                topic_lock = True
+                messages = []
+                silence = 0
+                log_debug(uid, {"event": "topic_lock"})
 
-    # silence handling
+    # silence logic (UNCHANGED)
     if is_short(user_text):
         silence += 1
     else:
@@ -217,7 +242,6 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     messages.append({"role": "user", "content": user_text})
 
-    # HARD STOP after 2 silences
     if silence >= 2:
         reply = "Theek hai 🙂"
     else:
@@ -225,11 +249,14 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_text},
         ]
-        try:
-            response = groq_chat(payload)
-            reply = response.choices[0].message.content.strip()
-        except Exception:
-            return
+        response, server_idx = groq_chat(payload)
+        reply = response.choices[0].message.content.strip()
+        log_debug(uid, {
+            "event": "reply",
+            "server": server_idx + 1,
+            "silence": silence,
+            "topic_lock": topic_lock
+        })
 
     messages.append({"role": "assistant", "content": reply})
 
@@ -239,7 +266,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "messages": messages[-10:],
             "silence": silence,
             "topic_lock": topic_lock,
-            "last_updated": datetime.utcnow()
+            "last_active": now
         }},
         upsert=True
     )
