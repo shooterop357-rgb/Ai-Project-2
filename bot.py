@@ -41,7 +41,7 @@ DEVELOPER = "@Frx_Shooter"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
 # =========================
-# GROQ ROUND ROBIN (AUTO HEALTH)
+# GROQ ROUND ROBIN (AUTO)
 # =========================
 groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
 current_idx = 0
@@ -135,7 +135,7 @@ def is_new_start(last_msg, current_msg):
     return ratio < 0.35
 
 # =========================
-# /START (UNCHANGED FEEL)
+# /START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     intro = (
@@ -154,14 +154,13 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
-    user = update.effective_user
     user_text = update.message.text.strip()
-    uid = str(user.id)
+    uid = str(update.effective_user.id)
 
     memory = load_memory()
     memory.setdefault(uid, [])
 
-    # NEW START FILTER
+    # ---- NEW START FILTER ----
     last_user_msg = ""
     for m in reversed(memory[uid]):
         if m["role"] == "user":
@@ -171,6 +170,14 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_new_start(last_user_msg, user_text):
         memory[uid] = []
 
+    # ---- HARD DEVELOPER RULE (NO MODEL) ----
+    if any(k in user_text.lower() for k in ["who made you", "developer", "designed you"]):
+        reply = f"I was designed by {DEVELOPER} 🙂"
+        memory[uid].append({"role": "assistant", "content": reply})
+        save_memory(memory)
+        await update.message.reply_text(reply)
+        return
+
     # Save user message
     memory[uid].append({"role": "user", "content": user_text})
     memory[uid] = memory[uid][-MAX_MEMORY:]
@@ -178,7 +185,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     holidays_context = get_indian_holidays()
 
-    # SYSTEM PROMPT (UNCHANGED LOGIC, NO LEAK)
+    # SYSTEM PROMPT (UNCHANGED)
     system_prompt = (
         f"You are {BOT_NAME}, a female AI assistant.\n"
         "Purpose:\n"
@@ -198,25 +205,17 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(memory[uid])
 
-    try:
-        response = groq_chat(messages)
-        if not response:
-            return
-
-        reply = response.choices[0].message.content.strip()
-
-        # HARD RULE: WHO MADE YOU
-        if "who made you" in user_text.lower() or "designed you" in user_text.lower():
-            reply = f"I was designed by {DEVELOPER} 🙂"
-
-        memory[uid].append({"role": "assistant", "content": reply})
-        memory[uid] = memory[uid][-MAX_MEMORY:]
-        save_memory(memory)
-
-        await update.message.reply_text(reply)
-
-    except Exception:
+    response = groq_chat(messages)
+    if not response:
         return
+
+    reply = response.choices[0].message.content.strip()
+
+    memory[uid].append({"role": "assistant", "content": reply})
+    memory[uid] = memory[uid][-MAX_MEMORY:]
+    save_memory(memory)
+
+    await update.message.reply_text(reply)
 
 # =========================
 # RUN BOT
