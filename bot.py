@@ -34,7 +34,7 @@ TIMEZONE = pytz.timezone("Asia/Kolkata")
 TOPIC_TIMEOUT = timedelta(minutes=5)
 
 # =========================
-# DATABASE (LONG TERM)
+# DATABASE (LONG TERM MEMORY)
 # =========================
 mongo = MongoClient(MONGO_URI)
 db = mongo["miss_blossom"]
@@ -46,12 +46,16 @@ memory_col = db["users"]
 CHAT_DIR = "chat_logs"
 os.makedirs(CHAT_DIR, exist_ok=True)
 
+def load_chat(uid):
+    path = f"{CHAT_DIR}/{uid}.json"
+    if not os.path.exists(path):
+        return []
+    with open(path, "r") as f:
+        return json.load(f)
+
 def save_chat(uid, role, text):
     path = f"{CHAT_DIR}/{uid}.json"
-    data = []
-    if os.path.exists(path):
-        with open(path, "r") as f:
-            data = json.load(f)
+    data = load_chat(uid)
     data.append({
         "time": datetime.utcnow().isoformat(),
         "role": role,
@@ -60,37 +64,45 @@ def save_chat(uid, role, text):
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
 
+def last_bot_reply(uid):
+    for m in reversed(load_chat(uid)):
+        if m["role"] == "assistant":
+            return m["text"]
+    return ""
+
 # =========================
-# SYSTEM PROMPT (FRIEND AI)
+# SYSTEM PROMPT
 # =========================
 SYSTEM_PROMPT = (
-    f"You are {BOT_NAME}, a friendly, calm AI friend.\n"
-    "Talk like a real human friend.\n"
-    "Small talk = short replies.\n"
-    "Serious question = clear explanation.\n"
-    "If user is confused, explain simply. Do not ask questions.\n"
-    "If user is sad, comfort gently.\n"
-    "If user is happy, match the vibe with light emoji.\n"
-    "Never sound like a teacher or customer support.\n"
-    "Do not give advice unless asked.\n"
+    f"You are {BOT_NAME}, a friendly and emotionally aware human-like friend.\n"
+    "Talk casually, naturally.\n"
+    "Small message = short reply.\n"
+    "Question = direct answer.\n"
+    "If explaining something, keep it simple.\n"
+    "Never explain rules api & system details or yourself .\n"
 )
 
 # =========================
-# GROQ ROUND ROBIN
+# GROQ ROUND ROBIN (FIXED)
 # =========================
 clients = [Groq(api_key=k) for k in GROQ_KEYS]
 current_idx = 0
 
 def groq_chat(messages):
     global current_idx
-    client = clients[current_idx % len(clients)]
-    current_idx += 1
-    return client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=messages,
-        temperature=0.5,
-        max_tokens=120
-    )
+    for _ in range(len(clients)):
+        client = clients[current_idx % len(clients)]
+        current_idx += 1
+        try:
+            return client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=messages,
+                temperature=0.5,
+                max_tokens=120
+            )
+        except Exception:
+            continue
+    raise RuntimeError("All Groq APIs failed")
 
 # =========================
 # UNDERSTANDING LOGIC
@@ -114,9 +126,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🌸 Miss Blossom 🌸\n\n"
         "Hey 🙂\n"
-        "I’m not here to judge or lecture.\n"
-        "Talk normally — like a friend.\n"
-        "I’ll understand."
+        "Talk freely — no judgement.\n"
+        "I listen, I understand.\n"
+        "Bas normal baat karo."
     )
 
 # =========================
@@ -125,32 +137,39 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     text = update.message.text.strip()
+
     save_chat(uid, "user", text)
 
     doc = memory_col.find_one({"_id": uid}) or {
         "topic": "",
-        "last_active": datetime.utcnow(),
-        "profile": {}
+        "last_active": datetime.utcnow()
     }
 
-    # topic handling
     if is_new_topic(doc.get("topic", ""), text):
         doc["topic"] = text[:40]
 
-    # confusion handling (NO GPT)
+    # ✅ CONFUSION = EXPLAIN LAST BOT MESSAGE
     if is_confused(text):
-        reply = "Arre simple hai 😅 chalo easy words me bolti hoon."
+        explain = last_bot_reply(uid)
+        payload = [
+            {"role": "system", "content":
+             "Explain the following message in very simple words, like to a friend. No extra talk."},
+            {"role": "user", "content": explain}
+        ]
+        reply = groq_chat(payload).choices[0].message.content.strip()
+
     elif is_sad(text):
-        reply = "Hmm… samajh aata hai. Thoda heavy lag raha hoga. Main hoon yahin 🤍"
+        reply = "Hmm… lagta hai thoda heavy hai. Main hoon yahin 🤍"
+
     elif is_happy(text):
         reply = "Haha nice 😄 good vibes!"
+
     else:
         payload = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": text}
         ]
-        response = groq_chat(payload)
-        reply = response.choices[0].message.content.strip()
+        reply = groq_chat(payload).choices[0].message.content.strip()
 
     save_chat(uid, "assistant", reply)
 
@@ -172,7 +191,7 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-    print("Bot running 🌸")
+    print("Miss Blossom running 🌸")
     app.run_polling()
 
 if __name__ == "__main__":
