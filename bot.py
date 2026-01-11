@@ -14,6 +14,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.constants import ChatAction
 
 from groq import Groq
 
@@ -41,7 +42,7 @@ DEVELOPER = "@Frx_Shooter"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
 # =========================
-# GROQ ROUND ROBIN (AUTO)
+# GROQ ROUND ROBIN
 # =========================
 groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
 current_idx = 0
@@ -60,10 +61,10 @@ def groq_chat(messages):
             )
         except Exception:
             continue
-    return None  # silent fail
+    return None
 
 # =========================
-# LONG MEMORY (FILE)
+# MEMORY (FILE)
 # =========================
 MEMORY_FILE = "memory.json"
 MAX_MEMORY = 200
@@ -81,14 +82,13 @@ def save_memory(data):
         json.dump(data, f, indent=2)
 
 # =========================
-# TIME CONTEXT (IST)
+# TIME CONTEXT
 # =========================
 def ist_context():
-    now = datetime.now(TIMEZONE)
-    return now.strftime("%A, %d %B %Y | %I:%M %p IST")
+    return datetime.now(TIMEZONE).strftime("%A, %d %B %Y | %I:%M %p IST")
 
 # =========================
-# INDIAN HOLIDAYS (CACHED)
+# HOLIDAYS (CACHED)
 # =========================
 _holiday_cache = {"date": None, "data": None}
 
@@ -117,22 +117,30 @@ def get_indian_holidays():
         _holiday_cache["date"] = today
         _holiday_cache["data"] = result
         return result
-
     except Exception:
         return None
 
 # =========================
-# NEW START FILTER
+# HELPERS (SAFE ADD-ONS)
 # =========================
-RESET_WORDS = ["by the way", "another thing", "new topic", "forget that"]
+FILLER_QUESTIONS = [
+    "how's your day going",
+    "how is your day going",
+    "what's on your mind"
+]
 
-def is_new_start(last_msg, current_msg):
-    if not last_msg:
+def is_filler_repeat(last_bot, new_bot):
+    if not last_bot:
         return False
-    if any(w in current_msg.lower() for w in RESET_WORDS):
-        return True
-    ratio = SequenceMatcher(None, last_msg.lower(), current_msg.lower()).ratio()
-    return ratio < 0.35
+    last_bot = last_bot.lower()
+    new_bot = new_bot.lower()
+    return any(q in last_bot and q in new_bot for q in FILLER_QUESTIONS)
+
+def last_meaningful_bot(memory):
+    for m in reversed(memory):
+        if m["role"] == "assistant" and len(m["content"].split()) > 6:
+            return m["content"]
+    return ""
 
 # =========================
 # /START
@@ -148,7 +156,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(intro)
 
 # =========================
-# MAIN CHAT
+# CHAT
 # =========================
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -160,17 +168,13 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     memory = load_memory()
     memory.setdefault(uid, [])
 
-    # ---- NEW START FILTER ----
-    last_user_msg = ""
-    for m in reversed(memory[uid]):
-        if m["role"] == "user":
-            last_user_msg = m["content"]
-            break
+    # Typing indicator
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action=ChatAction.TYPING
+    )
 
-    if is_new_start(last_user_msg, user_text):
-        memory[uid] = []
-
-    # ---- HARD DEVELOPER RULE (NO MODEL) ----
+    # HARD developer rule
     if any(k in user_text.lower() for k in ["who made you", "developer", "designed you"]):
         reply = f"I was designed by {DEVELOPER} 🙂"
         memory[uid].append({"role": "assistant", "content": reply})
@@ -178,14 +182,18 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
         return
 
-    # Save user message
+    # Explain / previous handling
+    if user_text.lower() in ["explain", "explain it", "previous joke"]:
+        context_text = last_meaningful_bot(memory[uid])
+        if context_text:
+            user_text = f"Explain this simply:\n{context_text}"
+
     memory[uid].append({"role": "user", "content": user_text})
     memory[uid] = memory[uid][-MAX_MEMORY:]
     save_memory(memory)
 
     holidays_context = get_indian_holidays()
 
-    # SYSTEM PROMPT (UNCHANGED)
     system_prompt = (
         f"You are {BOT_NAME}, a female AI assistant.\n"
         "Purpose:\n"
@@ -211,6 +219,11 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply = response.choices[0].message.content.strip()
 
+    # Anti loop guard
+    last_bot = last_meaningful_bot(memory[uid])
+    if is_filler_repeat(last_bot, reply):
+        return
+
     memory[uid].append({"role": "assistant", "content": reply})
     memory[uid] = memory[uid][-MAX_MEMORY:]
     save_memory(memory)
@@ -218,7 +231,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply)
 
 # =========================
-# RUN BOT
+# RUN
 # =========================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
