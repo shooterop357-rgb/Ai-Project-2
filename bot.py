@@ -38,7 +38,6 @@ BOT_NAME = "Miss Blossom 🌸"
 DEVELOPER = "@Frx_Shooter"
 ADMIN_ID = 5436530930
 TIMEZONE = pytz.timezone("Asia/Kolkata")
-
 TOPIC_TIMEOUT = timedelta(minutes=5)
 
 # =========================
@@ -66,6 +65,7 @@ SYSTEM_PROMPT = (
     "Do not push the conversation.\n"
     "Stay on the current topic until it is answered.\n"
     "Drop the old topic immediately if the user starts a new one.\n"
+    "Do not give advice unless the user clearly asks.\n"
     "Light emojis allowed, max one.\n"
     f"Current time (IST): {ist_context()}\n"
     f"If asked who made you: Designed by {DEVELOPER}.\n"
@@ -116,17 +116,13 @@ def groq_chat(messages):
     raise RuntimeError("All servers down")
 
 # =========================
-# HELPERS (UNCHANGED + SAFE ADD-ONS)
+# HELPERS (UNCHANGED)
 # =========================
 SHORT_WORDS = {"ok", "okay", "yes", "no", "nothing", "hmm", "fine"}
-CONTINUE_WORDS = {"tell me more", "more", "continue", "go on"}
 UNLOCK_WORDS = {"by the way", "another thing", "new topic", "i want to ask"}
 
 def is_short(text: str) -> bool:
     return text.lower().strip() in SHORT_WORDS or len(text.split()) <= 2
-
-def wants_to_continue(text: str) -> bool:
-    return text.lower().strip() in CONTINUE_WORDS
 
 def wants_new_topic(text: str) -> bool:
     return any(w in text.lower() for w in UNLOCK_WORDS)
@@ -144,15 +140,37 @@ def log_debug(uid, data):
     })
 
 # =========================
+# 🔵 HYBRID MEMORY ADD-ON (NEW)
+# =========================
+def save_topic_summary(uid, topic, text):
+    memory_col.update_one(
+        {"_id": uid},
+        {"$set": {
+            f"topics.{topic}.summary": text,
+            f"topics.{topic}.last_used": datetime.utcnow()
+        }},
+        upsert=True
+    )
+
+def detect_topic_from_text(text: str):
+    return text.lower().strip()[:40]
+
+def recall_old_topic(text: str, topics: dict):
+    for topic, data in topics.items():
+        if topic in text.lower():
+            return data.get("summary")
+    return None
+
+# =========================
 # START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🌸 Miss Blossom 🌸\n\n"
         "Hey 🙂\n"
-        "You can talk freely here.\n"
-        "No pressure, no formality.\n"
-        "I’m here to listen."
+        "I’m here for calm, real conversations.\n"
+        "Say whatever’s on your mind — no pressure.\n"
+        "I’ll keep it simple and listen."
     )
 
 # =========================
@@ -185,7 +203,7 @@ async def revive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🟢 Server {idx+1} revived")
 
 # =========================
-# CHAT (SAFE ADD-ONS APPLIED)
+# CHAT (HYBRID MEMORY ACTIVE)
 # =========================
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -199,42 +217,40 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "messages": [],
         "silence": 0,
         "topic_lock": False,
-        "last_active": now
+        "last_active": now,
+        "topics": {}
     }
 
     messages = doc["messages"]
     silence = doc.get("silence", 0)
     topic_lock = doc.get("topic_lock", False)
     last_active = doc.get("last_active", now)
+    topics = doc.get("topics", {})
 
-    # ⏳ SAFE ADD-ON: Auto topic timeout
+    # ⏳ Auto topic timeout
     if topic_lock and now - last_active > TOPIC_TIMEOUT:
         topic_lock = False
         messages = []
         silence = 0
         log_debug(uid, {"event": "topic_timeout"})
 
-    last_assistant = next(
-        (m["content"] for m in reversed(messages) if m["role"] == "assistant"),
-        ""
-    )
+    last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
 
-    # 🔒 SAFE ADD-ON: Soft conversation lock
+    # 🔒 Soft topic lock
     if topic_lock:
         if wants_new_topic(user_text):
             topic_lock = False
             messages = []
             silence = 0
-            log_debug(uid, {"event": "manual_unlock"})
     else:
-        if not wants_to_continue(user_text):
-            if is_new_topic(last_assistant, user_text):
-                topic_lock = True
-                messages = []
-                silence = 0
-                log_debug(uid, {"event": "topic_lock"})
+        if is_new_topic(last_user, user_text):
+            topic_lock = True
+            messages = []
+            silence = 0
+            topic = detect_topic_from_text(last_user)
+            save_topic_summary(uid, topic, last_user)
 
-    # silence logic (UNCHANGED)
+    # Silence logic
     if is_short(user_text):
         silence += 1
     else:
@@ -242,19 +258,23 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     messages.append({"role": "user", "content": user_text})
 
+    # 🔁 Old topic recall (ONLY if user asks)
+    recalled = recall_old_topic(user_text, topics)
+
     if silence >= 2:
         reply = "Theek hai 🙂"
     else:
-        payload = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_text},
-        ]
+        payload = [{"role": "system", "content": SYSTEM_PROMPT}]
+        if recalled:
+            payload.append({"role": "system", "content": f"Context reminder: {recalled}"})
+        payload.append({"role": "user", "content": user_text})
+
         response, server_idx = groq_chat(payload)
         reply = response.choices[0].message.content.strip()
+
         log_debug(uid, {
             "event": "reply",
             "server": server_idx + 1,
-            "silence": silence,
             "topic_lock": topic_lock
         })
 
