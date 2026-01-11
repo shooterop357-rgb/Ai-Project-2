@@ -53,7 +53,7 @@ def ist_context():
     return datetime.now(TIMEZONE).strftime("%A, %d %B %Y, %I:%M %p IST")
 
 # =========================
-# SYSTEM PROMPT
+# SYSTEM PROMPT (UNCHANGED)
 # =========================
 SYSTEM_PROMPT = (
     f"You are {BOT_NAME}, a calm and professional woman.\n"
@@ -70,56 +70,110 @@ SYSTEM_PROMPT = (
 )
 
 # =========================
-# GROQ ROUND ROBIN
+# GROQ ROUND ROBIN + HEALTH
 # =========================
 groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
 current_server = 0
+MAX_FAILS = 2
+BAN_TIME = 1800
+
+server_health = {
+    i: {"fails": 0, "banned_until": 0}
+    for i in range(len(groq_clients))
+}
 
 def groq_chat(messages):
     global current_server
-    idx = current_server % len(groq_clients)
-    current_server += 1
-    return groq_clients[idx].chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=messages,
-        temperature=0.4,
-        max_tokens=80,
-    )
+    now = time.time()
+
+    for _ in range(len(groq_clients)):
+        idx = current_server % len(groq_clients)
+        current_server += 1
+        h = server_health[idx]
+
+        if h["banned_until"] and now < h["banned_until"]:
+            continue
+
+        try:
+            resp = groq_clients[idx].chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=messages,
+                temperature=0.4,
+                max_tokens=80,
+            )
+            h["fails"] = 0
+            h["banned_until"] = 0
+            return resp
+
+        except Exception:
+            h["fails"] += 1
+            if h["fails"] >= MAX_FAILS:
+                h["banned_until"] = now + BAN_TIME
+
+    raise RuntimeError("All servers down")
 
 # =========================
-# TOPIC DETECTION
+# HELPERS
 # =========================
-def is_new_topic(prev_text: str, new_text: str) -> bool:
-    if not prev_text:
+SHORT_WORDS = {"ok", "okay", "yes", "no", "nothing", "hmm", "fine"}
+
+UNLOCK_WORDS = [
+    "by the way", "another thing", "new topic",
+    "i want to ask", "different question"
+]
+
+def is_short(text: str) -> bool:
+    return text.lower().strip() in SHORT_WORDS or len(text.split()) <= 2
+
+def is_new_topic(prev: str, curr: str) -> bool:
+    if not prev:
         return False
-    score = SequenceMatcher(None, prev_text.lower(), new_text.lower()).ratio()
-    return score < 0.35
+    return SequenceMatcher(None, prev.lower(), curr.lower()).ratio() < 0.35
 
-# =========================
-# SENTIMENT DETECTION
-# =========================
-LOW_WORDS = ["nothing", "ok", "okay", "yes", "no", "hmm", "fine"]
-
-def detect_sentiment(text: str) -> str:
-    t = text.lower().strip()
-    if t in LOW_WORDS or len(t.split()) <= 2:
-        return "low"
-    return "normal"
-
-# =========================
-# MEMORY SUMMARY
-# =========================
-def summarize_messages(messages):
-    user_msgs = [m["content"] for m in messages if m["role"] == "user"]
-    if not user_msgs:
-        return ""
-    return " | ".join(user_msgs[-5:])[:300]
+def wants_new_topic(text: str) -> bool:
+    t = text.lower()
+    return any(w in t for w in UNLOCK_WORDS)
 
 # =========================
 # START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hey 🙂")
+    await update.message.reply_text(
+        "🌸 Miss Blossom 🌸\n\n"
+        "Hey 🙂\n"
+        "You can talk freely here.\n"
+        "No pressure, no formality.\n"
+        "I’m here to listen."
+    )
+
+# =========================
+# ADMIN COMMANDS
+# =========================
+async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    now = time.time()
+    text = "🖥️ Server Health\n\n"
+
+    for i, h in server_health.items():
+        if h["banned_until"] and now < h["banned_until"]:
+            mins = int((h["banned_until"] - now) / 60)
+            status = f"🔴 DOWN ({mins}m)"
+        else:
+            status = "🟢 ACTIVE"
+        text += f"Server {i+1}: {status}\n"
+
+    await update.message.reply_text(text)
+
+async def revive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID or not context.args:
+        return
+    idx = int(context.args[0]) - 1
+    if 0 <= idx < len(server_health):
+        server_health[idx]["fails"] = 0
+        server_health[idx]["banned_until"] = 0
+        await update.message.reply_text(f"🟢 Server {idx+1} revived")
 
 # =========================
 # CHAT
@@ -133,54 +187,64 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     doc = memory_col.find_one({"_id": uid}) or {
         "messages": [],
-        "summary": "",
+        "silence": 0,
+        "topic_lock": False,
         "last_updated": datetime.utcnow()
     }
 
     messages = doc["messages"]
+    silence = doc.get("silence", 0)
+    topic_lock = doc.get("topic_lock", False)
 
-    # 🔁 Topic reset
-    last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
-    if is_new_topic(last_user, user_text):
-        messages = []
+    # 🔒 Conversation lock logic
+    if topic_lock:
+        if wants_new_topic(user_text):
+            messages = []
+            silence = 0
+            topic_lock = False
+    else:
+        last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+        if is_new_topic(last_user, user_text):
+            messages = []
+            silence = 0
+            topic_lock = True
 
-    mood = detect_sentiment(user_text)
+    # silence handling
+    if is_short(user_text):
+        silence += 1
+    else:
+        silence = 0
 
     messages.append({"role": "user", "content": user_text})
 
-    payload = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_text},
-    ]
+    # HARD STOP after 2 silences
+    if silence >= 2:
+        reply = "Theek hai 🙂"
+    else:
+        payload = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_text},
+        ]
+        try:
+            response = groq_chat(payload)
+            reply = response.choices[0].message.content.strip()
+        except Exception:
+            return
 
-    try:
-        response = groq_chat(payload)
-        reply = response.choices[0].message.content.strip()
+    messages.append({"role": "assistant", "content": reply})
 
-        if mood == "low":
-            reply = reply.split("\n")[0]
+    memory_col.update_one(
+        {"_id": uid},
+        {"$set": {
+            "messages": messages[-10:],
+            "silence": silence,
+            "topic_lock": topic_lock,
+            "last_updated": datetime.utcnow()
+        }},
+        upsert=True
+    )
 
-        messages.append({"role": "assistant", "content": reply})
-
-        summary = doc.get("summary", "")
-        if len(messages) > 20:
-            summary = summarize_messages(messages)
-            messages = messages[-6:]
-
-        memory_col.update_one(
-            {"_id": uid},
-            {"$set": {
-                "messages": messages,
-                "summary": summary,
-                "last_updated": datetime.utcnow()
-            }},
-            upsert=True
-        )
-
-        await update.message.reply_text(reply)
-
-    except Exception:
-        return
+    await update.message.reply_text(reply)
 
 # =========================
 # MAIN
@@ -188,6 +252,8 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("health", health))
+    app.add_handler(CommandHandler("revive", revive))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
     print("Miss Blossom is running 🌸")
     app.run_polling(drop_pending_updates=True)
