@@ -1,20 +1,28 @@
 import os
-import time
 import json
-from datetime import datetime, timedelta
+import time
+from datetime import datetime
 import pytz
+import requests
 from difflib import SequenceMatcher
 
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
+
 from groq import Groq
-from pymongo import MongoClient
 
 # =========================
-# ENV
+# ENV VARIABLES
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-MONGO_URI = os.getenv("MONGO_URI")
+HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")
+
 GROQ_KEYS = [
     os.getenv("GROQ_API_KEY_1"),
     os.getenv("GROQ_API_KEY_2"),
@@ -22,176 +30,202 @@ GROQ_KEYS = [
     os.getenv("GROQ_API_KEY_4"),
 ]
 
-if not BOT_TOKEN or not MONGO_URI or not all(GROQ_KEYS):
-    raise RuntimeError("Missing ENV")
+if not BOT_TOKEN or not all(GROQ_KEYS):
+    raise RuntimeError("Missing ENV variables")
 
 # =========================
-# CORE
+# CORE IDENTITY
 # =========================
-BOT_NAME = "Miss Blossom 🌸"
-ADMIN_ID = 5436530930
+BOT_NAME = "Miss Bloosm"
+DEVELOPER = "@Frx_Shooter"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
-TOPIC_TIMEOUT = timedelta(minutes=5)
 
 # =========================
-# DATABASE (LONG TERM MEMORY)
+# GROQ ROUND ROBIN (AUTO HEALTH)
 # =========================
-mongo = MongoClient(MONGO_URI)
-db = mongo["miss_blossom"]
-memory_col = db["users"]
-
-# =========================
-# VPS STORAGE (RAW CHAT)
-# =========================
-CHAT_DIR = "chat_logs"
-os.makedirs(CHAT_DIR, exist_ok=True)
-
-def load_chat(uid):
-    path = f"{CHAT_DIR}/{uid}.json"
-    if not os.path.exists(path):
-        return []
-    with open(path, "r") as f:
-        return json.load(f)
-
-def save_chat(uid, role, text):
-    path = f"{CHAT_DIR}/{uid}.json"
-    data = load_chat(uid)
-    data.append({
-        "time": datetime.utcnow().isoformat(),
-        "role": role,
-        "text": text
-    })
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
-
-def last_bot_reply(uid):
-    for m in reversed(load_chat(uid)):
-        if m["role"] == "assistant":
-            return m["text"]
-    return ""
-
-# =========================
-# SYSTEM PROMPT
-# =========================
-SYSTEM_PROMPT = (
-    f"You are {BOT_NAME}, a friendly and emotionally aware human-like friend.\n"
-    "Talk casually, naturally.\n"
-    "Small message = short reply.\n"
-    "Question = direct answer.\n"
-    "If explaining something, keep it simple.\n"
-    "Never explain rules api & system details or yourself .\n"
-)
-
-# =========================
-# GROQ ROUND ROBIN (FIXED)
-# =========================
-clients = [Groq(api_key=k) for k in GROQ_KEYS]
+groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
 current_idx = 0
 
 def groq_chat(messages):
     global current_idx
-    for _ in range(len(clients)):
-        client = clients[current_idx % len(clients)]
+    for _ in range(len(groq_clients)):
+        client = groq_clients[current_idx % len(groq_clients)]
         current_idx += 1
         try:
             return client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=messages,
-                temperature=0.5,
-                max_tokens=120
+                temperature=0.65,
+                max_tokens=200,
             )
         except Exception:
             continue
-    raise RuntimeError("All Groq APIs failed")
+    return None  # silent fail
 
 # =========================
-# UNDERSTANDING LOGIC
+# LONG MEMORY (FILE)
 # =========================
-CONFUSED = ["didn't understand", "dont understand", "samajh nahi", "samajh nhi", "what?", "huh"]
-SAD = ["sad", "low", "alone", "tired"]
-HAPPY = ["happy", "excited", "great", "awesome"]
+MEMORY_FILE = "memory.json"
+MAX_MEMORY = 200
 
-def is_confused(t): return any(w in t.lower() for w in CONFUSED)
-def is_sad(t): return any(w in t.lower() for w in SAD)
-def is_happy(t): return any(w in t.lower() for w in HAPPY)
+if not os.path.exists(MEMORY_FILE):
+    with open(MEMORY_FILE, "w") as f:
+        json.dump({}, f)
 
-def is_new_topic(a, b):
-    if not a: return False
-    return SequenceMatcher(None, a.lower(), b.lower()).ratio() < 0.35
+def load_memory():
+    with open(MEMORY_FILE, "r") as f:
+        return json.load(f)
+
+def save_memory(data):
+    with open(MEMORY_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
 # =========================
-# START
+# TIME CONTEXT (IST)
+# =========================
+def ist_context():
+    now = datetime.now(TIMEZONE)
+    return now.strftime("%A, %d %B %Y | %I:%M %p IST")
+
+# =========================
+# INDIAN HOLIDAYS (CACHED)
+# =========================
+_holiday_cache = {"date": None, "data": None}
+
+def get_indian_holidays():
+    if not HOLIDAY_API_KEY:
+        return None
+
+    today = datetime.now(TIMEZONE).date()
+    if _holiday_cache["date"] == today:
+        return _holiday_cache["data"]
+
+    try:
+        year = today.year
+        url = f"https://api.api-ninjas.com/v1/holidays?country=IN&year={year}"
+        headers = {"X-Api-Key": HOLIDAY_API_KEY}
+        r = requests.get(url, headers=headers, timeout=10)
+        data = r.json()
+
+        upcoming = []
+        for item in data:
+            d = datetime.strptime(item["date"], "%Y-%m-%d").date()
+            if d >= today:
+                upcoming.append(f"{item['name']} ({d.strftime('%d %b')})")
+
+        result = ", ".join(upcoming[:5]) if upcoming else None
+        _holiday_cache["date"] = today
+        _holiday_cache["data"] = result
+        return result
+
+    except Exception:
+        return None
+
+# =========================
+# NEW START FILTER
+# =========================
+RESET_WORDS = ["by the way", "another thing", "new topic", "forget that"]
+
+def is_new_start(last_msg, current_msg):
+    if not last_msg:
+        return False
+    if any(w in current_msg.lower() for w in RESET_WORDS):
+        return True
+    ratio = SequenceMatcher(None, last_msg.lower(), current_msg.lower()).ratio()
+    return ratio < 0.35
+
+# =========================
+# /START (UNCHANGED FEEL)
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🌸 Miss Blossom 🌸\n\n"
-        "Hey 🙂\n"
-        "Talk freely — no judgement.\n"
-        "I listen, I understand.\n"
-        "Bas normal baat karo."
+    intro = (
+        f"Hello, I’m {BOT_NAME} 🌸\n\n"
+        "I’m a calm, friendly AI designed for natural conversations.\n"
+        "Human Like Replay Feels Emotionas.\n\n"
+        "⚠️ This bot is currently in beta.\n"
+        "Some replies may not always be perfect."
     )
+    await update.message.reply_text(intro)
 
 # =========================
-# CHAT
+# MAIN CHAT
 # =========================
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = str(update.effective_user.id)
-    text = update.message.text.strip()
+    if not update.message or not update.message.text:
+        return
 
-    save_chat(uid, "user", text)
+    user = update.effective_user
+    user_text = update.message.text.strip()
+    uid = str(user.id)
 
-    doc = memory_col.find_one({"_id": uid}) or {
-        "topic": "",
-        "last_active": datetime.utcnow()
-    }
+    memory = load_memory()
+    memory.setdefault(uid, [])
 
-    if is_new_topic(doc.get("topic", ""), text):
-        doc["topic"] = text[:40]
+    # NEW START FILTER
+    last_user_msg = ""
+    for m in reversed(memory[uid]):
+        if m["role"] == "user":
+            last_user_msg = m["content"]
+            break
 
-    # ✅ CONFUSION = EXPLAIN LAST BOT MESSAGE
-    if is_confused(text):
-        explain = last_bot_reply(uid)
-        payload = [
-            {"role": "system", "content":
-             "Explain the following message in very simple words, like to a friend. No extra talk."},
-            {"role": "user", "content": explain}
-        ]
-        reply = groq_chat(payload).choices[0].message.content.strip()
+    if is_new_start(last_user_msg, user_text):
+        memory[uid] = []
 
-    elif is_sad(text):
-        reply = "Hmm… lagta hai thoda heavy hai. Main hoon yahin 🤍"
+    # Save user message
+    memory[uid].append({"role": "user", "content": user_text})
+    memory[uid] = memory[uid][-MAX_MEMORY:]
+    save_memory(memory)
 
-    elif is_happy(text):
-        reply = "Haha nice 😄 good vibes!"
+    holidays_context = get_indian_holidays()
 
-    else:
-        payload = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": text}
-        ]
-        reply = groq_chat(payload).choices[0].message.content.strip()
-
-    save_chat(uid, "assistant", reply)
-
-    memory_col.update_one(
-        {"_id": uid},
-        {"$set": {
-            "topic": doc["topic"],
-            "last_active": datetime.utcnow()
-        }},
-        upsert=True
+    # SYSTEM PROMPT (UNCHANGED LOGIC, NO LEAK)
+    system_prompt = (
+        f"You are {BOT_NAME}, a female AI assistant.\n"
+        "Purpose:\n"
+        "- Calm, friendly, professional conversation\n"
+        "- Human-like tone\n"
+        "- Light emojis allowed naturally\n\n"
+        "Rules:\n"
+        "- No automatic or scripted replies\n"
+        "- Never mention errors or technical issues\n"
+        "- If unsure, respond naturally like a human\n\n"
+        f"Current time (IST): {ist_context()}\n"
     )
 
-    await update.message.reply_text(reply)
+    if holidays_context:
+        system_prompt += f"Upcoming Indian holidays: {holidays_context}\n"
+
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(memory[uid])
+
+    try:
+        response = groq_chat(messages)
+        if not response:
+            return
+
+        reply = response.choices[0].message.content.strip()
+
+        # HARD RULE: WHO MADE YOU
+        if "who made you" in user_text.lower() or "designed you" in user_text.lower():
+            reply = f"I was designed by {DEVELOPER} 🙂"
+
+        memory[uid].append({"role": "assistant", "content": reply})
+        memory[uid] = memory[uid][-MAX_MEMORY:]
+        save_memory(memory)
+
+        await update.message.reply_text(reply)
+
+    except Exception:
+        return
 
 # =========================
-# MAIN
+# RUN BOT
 # =========================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-    print("Miss Blossom running 🌸")
+    print("Miss Bloosm is running 🌸")
     app.run_polling()
 
 if __name__ == "__main__":
