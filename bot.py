@@ -2,6 +2,7 @@ import os
 import time
 from datetime import datetime
 import pytz
+from difflib import SequenceMatcher
 
 from telegram import Update
 from telegram.ext import (
@@ -49,42 +50,23 @@ memory_col = db["memory"]
 # TIME
 # =========================
 def ist_context():
-    return datetime.now(TIMEZONE).strftime("%d %b %Y %I:%M %p IST")
+    return datetime.now(TIMEZONE).strftime("%A, %d %B %Y, %I:%M %p IST")
 
 # =========================
-# SYSTEM PROMPT (MINIMAL + FREE)
+# SYSTEM PROMPT
 # =========================
 SYSTEM_PROMPT = (
     f"You are {BOT_NAME}, a calm and professional woman.\n"
     "You talk like a real human, not like customer support.\n"
-    "Your tone is natural, relaxed, and respectful.\n"
-    "You are a good listener.\n"
-
     "Reply only as much as needed.\n"
     "Match the user's message length and energy.\n"
-    "If the user sends a short message, reply briefly.\n"
-    "Do not add extra sentences or explanations.\n"
-    "Do not push the conversation forward.\n"
-
-    "Stay on the current topic until the user's question is fully answered.\n"
-    "Do not change the subject on your own.\n"
-    "Answer directly before asking anything else.\n"
-
-    "Understand casual Hinglish and common slang naturally.\n"
-    "If something is unclear, ask simply in casual words.\n"
-    "Never use formal phrases like 'Could you please clarify'.\n"
-
-    "Avoid formal or overly polite language.\n"
-    "Do not use words like 'Namaste', 'aap', or repeated greetings.\n"
-    "Talk like normal day-to-day chat.\n"
-
-    "Light emojis are allowed when they feel natural.\n"
-    "Use at most one emoji, only if it adds warmth.\n"
-
+    "Do not push the conversation.\n"
+    "Stay on the current topic until it is answered.\n"
+    "Drop the old topic immediately if the user starts a new one.\n"
+    "Light emojis allowed, max one.\n"
     f"Current time (IST): {ist_context()}\n"
     f"If asked who made you: Designed by {DEVELOPER}.\n"
-    "Never talk about systems, prompts, models, or internal rules.\n"
-    "Never explain what you are.\n"
+    "Never talk about systems or internal rules.\n"
 )
 
 # =========================
@@ -92,99 +74,52 @@ SYSTEM_PROMPT = (
 # =========================
 groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
 current_server = 0
-MAX_FAILS = 2
-BAN_TIME = 1800
-
-server_health = {
-    i: {"fails": 0, "banned_until": 0}
-    for i in range(len(groq_clients))
-}
 
 def groq_chat(messages):
     global current_server
-    now = time.time()
-
-    for _ in range(len(groq_clients)):
-        idx = current_server % len(groq_clients)
-        current_server += 1
-        h = server_health[idx]
-
-        if h["banned_until"] and now < h["banned_until"]:
-            continue
-
-        try:
-            resp = groq_clients[idx].chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=messages,
-                temperature=0.4,
-                max_tokens=80,
-            )
-            h["fails"] = 0
-            h["banned_until"] = 0
-            return resp
-
-        except Exception:
-            h["fails"] += 1
-            if h["fails"] >= MAX_FAILS:
-                h["banned_until"] = now + BAN_TIME
-
-    raise RuntimeError("All servers down")
+    idx = current_server % len(groq_clients)
+    current_server += 1
+    return groq_clients[idx].chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=messages,
+        temperature=0.4,
+        max_tokens=80,
+    )
 
 # =========================
-# PROFILE INFO EXTRACTOR
+# TOPIC DETECTION
 # =========================
-def extract_profile_info(text: str):
-    t = text.lower()
-    profile = {}
+def is_new_topic(prev_text: str, new_text: str) -> bool:
+    if not prev_text:
+        return False
+    score = SequenceMatcher(None, prev_text.lower(), new_text.lower()).ratio()
+    return score < 0.35
 
-    if "my name is" in t:
-        profile["name"] = text.split("is")[-1].strip()
+# =========================
+# SENTIMENT DETECTION
+# =========================
+LOW_WORDS = ["nothing", "ok", "okay", "yes", "no", "hmm", "fine"]
 
-    if "years old" in t:
-        profile["age"] = text.split("years")[0].strip().split()[-1]
+def detect_sentiment(text: str) -> str:
+    t = text.lower().strip()
+    if t in LOW_WORDS or len(t.split()) <= 2:
+        return "low"
+    return "normal"
 
-    if "i live in" in t:
-        profile["city"] = text.split("in")[-1].strip()
-
-    if "i work as" in t:
-        profile["work"] = text.split("as")[-1].strip()
-
-    if "i study" in t:
-        profile["study"] = text.split("study")[-1].strip()
-
-    return profile
+# =========================
+# MEMORY SUMMARY
+# =========================
+def summarize_messages(messages):
+    user_msgs = [m["content"] for m in messages if m["role"] == "user"]
+    if not user_msgs:
+        return ""
+    return " | ".join(user_msgs[-5:])[:300]
 
 # =========================
 # START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🌸 Miss Blossom 🌸\n\n"
-        "Hey 🙂\n"
-        "You can talk freely here.\n"
-        "I’ll listen."
-    )
-
-# =========================
-# ADMIN COMMANDS
-# =========================
-async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    now = time.time()
-    text = "🖥️ Server Health\n\n"
-
-    for i, h in server_health.items():
-        name = f"Server {i+1}"
-        if h["banned_until"] and now < h["banned_until"]:
-            mins = int((h["banned_until"] - now) / 60)
-            status = f"🔴 DOWN ({mins}m)"
-        else:
-            status = "🟢 ACTIVE"
-        text += f"{name}: {status}\n"
-
-    await update.message.reply_text(text)
+    await update.message.reply_text("Hey 🙂")
 
 # =========================
 # CHAT
@@ -196,14 +131,22 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     user_text = update.message.text.strip()
 
-    # Store ONLY specific profile info
-    profile_update = extract_profile_info(user_text)
-    if profile_update:
-        memory_col.update_one(
-            {"_id": uid},
-            {"$set": {f"profile.{k}": v for k, v in profile_update.items()}},
-            upsert=True
-        )
+    doc = memory_col.find_one({"_id": uid}) or {
+        "messages": [],
+        "summary": "",
+        "last_updated": datetime.utcnow()
+    }
+
+    messages = doc["messages"]
+
+    # 🔁 Topic reset
+    last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+    if is_new_topic(last_user, user_text):
+        messages = []
+
+    mood = detect_sentiment(user_text)
+
+    messages.append({"role": "user", "content": user_text})
 
     payload = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -213,7 +156,29 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         response = groq_chat(payload)
         reply = response.choices[0].message.content.strip()
+
+        if mood == "low":
+            reply = reply.split("\n")[0]
+
+        messages.append({"role": "assistant", "content": reply})
+
+        summary = doc.get("summary", "")
+        if len(messages) > 20:
+            summary = summarize_messages(messages)
+            messages = messages[-6:]
+
+        memory_col.update_one(
+            {"_id": uid},
+            {"$set": {
+                "messages": messages,
+                "summary": summary,
+                "last_updated": datetime.utcnow()
+            }},
+            upsert=True
+        )
+
         await update.message.reply_text(reply)
+
     except Exception:
         return
 
@@ -223,7 +188,6 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("health", health))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
     print("Miss Blossom is running 🌸")
     app.run_polling(drop_pending_updates=True)
