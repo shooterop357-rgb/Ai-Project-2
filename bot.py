@@ -1,10 +1,8 @@
 import os
 import json
-import time
 from datetime import datetime
 import pytz
 import requests
-from difflib import SequenceMatcher
 
 from telegram import Update
 from telegram.ext import (
@@ -64,22 +62,26 @@ def groq_chat(messages):
     return None
 
 # =========================
-# MEMORY (FILE)
+# MEMORY (FILE – SAFE)
 # =========================
 MEMORY_FILE = "memory.json"
 MAX_MEMORY = 200
 
-if not os.path.exists(MEMORY_FILE):
-    with open(MEMORY_FILE, "w") as f:
-        json.dump({}, f)
-
 def load_memory():
-    with open(MEMORY_FILE, "r") as f:
-        return json.load(f)
+    try:
+        if not os.path.exists(MEMORY_FILE):
+            return {}
+        with open(MEMORY_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
 def save_memory(data):
-    with open(MEMORY_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    try:
+        with open(MEMORY_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
 
 # =========================
 # TIME CONTEXT
@@ -121,26 +123,18 @@ def get_indian_holidays():
         return None
 
 # =========================
-# HELPERS (SAFE ADD-ONS)
+# SHORT REPLY MAP
 # =========================
-FILLER_QUESTIONS = [
-    "how's your day going",
-    "how is your day going",
-    "what's on your mind"
-]
-
-def is_filler_repeat(last_bot, new_bot):
-    if not last_bot:
-        return False
-    last_bot = last_bot.lower()
-    new_bot = new_bot.lower()
-    return any(q in last_bot and q in new_bot for q in FILLER_QUESTIONS)
-
-def last_meaningful_bot(memory):
-    for m in reversed(memory):
-        if m["role"] == "assistant" and len(m["content"].split()) > 6:
-            return m["content"]
-    return ""
+LOW_EFFORT = {
+    "ok": "Okay.",
+    "okay": "Alright.",
+    "hmm": "Hmm.",
+    "hm": "Hmm.",
+    "nothing": "Got it.",
+    "sure": "Great.",
+    "fine": "Alright.",
+    "👍": "👍"
+}
 
 # =========================
 # /START
@@ -162,11 +156,20 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
-    user_text = update.message.text.strip()
+    chat_type = update.effective_chat.type
+    text = update.message.text.strip()
     uid = str(update.effective_user.id)
 
-    memory = load_memory()
-    memory.setdefault(uid, [])
+    # =========================
+    # GROUP CHAT FILTER
+    # =========================
+    if chat_type in ["group", "supergroup"]:
+        if (
+            f"@{context.bot.username}" not in text
+            and not update.message.reply_to_message
+            and not text.startswith("/")
+        ):
+            return
 
     # Typing indicator
     await context.bot.send_chat_action(
@@ -174,21 +177,20 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         action=ChatAction.TYPING
     )
 
-    # HARD developer rule
-    if any(k in user_text.lower() for k in ["who made you", "developer", "designed you"]):
-        reply = f"I was designed by {DEVELOPER} 🙂"
-        memory[uid].append({"role": "assistant", "content": reply})
-        save_memory(memory)
-        await update.message.reply_text(reply)
+    # Short replies
+    if text.lower() in LOW_EFFORT:
+        await update.message.reply_text(LOW_EFFORT[text.lower()])
         return
 
-    # Explain / previous handling
-    if user_text.lower() in ["explain", "explain it", "previous joke"]:
-        context_text = last_meaningful_bot(memory[uid])
-        if context_text:
-            user_text = f"Explain this simply:\n{context_text}"
+    # Developer identity (hard rule)
+    if any(k in text.lower() for k in ["who made you", "developer", "designed you"]):
+        await update.message.reply_text(f"I was designed by {DEVELOPER} 🙂")
+        return
 
-    memory[uid].append({"role": "user", "content": user_text})
+    memory = load_memory()
+    memory.setdefault(uid, [])
+
+    memory[uid].append({"role": "user", "content": text})
     memory[uid] = memory[uid][-MAX_MEMORY:]
     save_memory(memory)
 
@@ -214,15 +216,14 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     messages.extend(memory[uid])
 
     response = groq_chat(messages)
+
     if not response:
+        await update.message.reply_text(
+            "Temporary technical issue. Please try again."
+        )
         return
 
     reply = response.choices[0].message.content.strip()
-
-    # Anti loop guard
-    last_bot = last_meaningful_bot(memory[uid])
-    if is_filler_repeat(last_bot, reply):
-        return
 
     memory[uid].append({"role": "assistant", "content": reply})
     memory[uid] = memory[uid][-MAX_MEMORY:]
