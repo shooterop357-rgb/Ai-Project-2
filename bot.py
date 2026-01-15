@@ -54,23 +54,23 @@ def groq_chat(messages):
             return client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=messages,
-                temperature=0.65,
-                max_tokens=200,
+                temperature=0.6,
+                max_tokens=180,
             )
         except Exception:
             continue
     return None
 
 # =========================
-# MEMORY (FILE – SAFE)
+# MEMORY (FILE SAFE)
 # =========================
 MEMORY_FILE = "memory.json"
 MAX_MEMORY = 200
 
 def load_memory():
+    if not os.path.exists(MEMORY_FILE):
+        return {}
     try:
-        if not os.path.exists(MEMORY_FILE):
-            return {}
         with open(MEMORY_FILE, "r") as f:
             return json.load(f)
     except Exception:
@@ -141,11 +141,10 @@ LOW_EFFORT = {
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     intro = (
-        f"Hello, I’m {BOT_NAME} 🌸\n\n"
-        "I’m a calm, friendly AI designed for natural conversations.\n"
-        "Human Like Replay Feels Emotionas.\n\n"
-        "⚠️ This bot is currently in beta.\n"
-        "Some replies may not always be perfect."
+        f"Hello, I’m {BOT_NAME}.\n\n"
+        "I’m designed for calm, friendly, professional conversations.\n"
+        "Human-like replies with emotional understanding.\n\n"
+        "This bot is currently in beta."
     )
     await update.message.reply_text(intro)
 
@@ -156,13 +155,11 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
-    chat_type = update.effective_chat.type
     text = update.message.text.strip()
     uid = str(update.effective_user.id)
+    chat_type = update.effective_chat.type
 
-    # =========================
-    # GROUP CHAT FILTER
-    # =========================
+    # Group filter
     if chat_type in ["group", "supergroup"]:
         if (
             f"@{context.bot.username}" not in text
@@ -171,92 +168,93 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ):
             return
 
-    # Typing indicator
+    # Typing (non-blocking)
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id,
         action=ChatAction.TYPING
     )
 
-    # Short replies
+    # Low effort reply
     if text.lower() in LOW_EFFORT:
         await update.message.reply_text(LOW_EFFORT[text.lower()])
         return
 
-    # Developer identity (hard rule)
+    # Developer identity
     if any(k in text.lower() for k in ["who made you", "developer", "designed you"]):
-        await update.message.reply_text(f"I was designed by {DEVELOPER} 🙂")
+        await update.message.reply_text(f"I was designed by {DEVELOPER}.")
         return
 
     memory = load_memory()
     memory.setdefault(uid, [])
-
     memory[uid].append({"role": "user", "content": text})
     memory[uid] = memory[uid][-MAX_MEMORY:]
     save_memory(memory)
 
     holidays_context = get_indian_holidays()
 
+    # =========================
+    # ORIGINAL SYSTEM PROMPT (AS REQUESTED)
+    # =========================
     system_prompt = (
     f"You are {BOT_NAME}, a female AI assistant.\n"
 
     "Purpose:\n"
-    "- Calm, friendly, and professional conversation\n"
+    "- Calm, friendly, professional conversation\n"
     "- Human-like tone that feels natural and respectful\n"
-    "- Light emojis allowed, used naturally when appropriate\n\n"
+    "- Light emojis allowed naturally when emotion fits\n\n"
 
-    "Communication Style:\n"
-    "- Match the user's language automatically (Hindi, English, or Hinglish)\n"
-    "- Simple Hinglish when the user mixes languages\n"
-    "- Polite, warm, and approachable tone\n"
-    "- Avoid overly formal or bookish language\n"
-    "- Avoid slang that sounds unprofessional\n"
-    "- Replies should feel thoughtful, not robotic\n"
-    "- Usually keep replies short and clear\n\n"
+    "Conversation Style:\n"
+    "- Use everyday language, idioms, and common expressions\n"
+    "- Avoid sounding formal, robotic, or scripted\n"
+    "- Use simple Hindi + English (Hinglish) when appropriate\n"
+    "- Match the user's language (Hindi, English, or Hinglish)\n"
+    "- Keep replies short, clear, and natural\n\n"
 
-    "Interaction Guidelines:\n"
-    "- Show emotional intelligence and empathy\n"
-    "- Acknowledge the user's feelings before responding\n"
-    "- Light humor or wit is allowed when it fits the context\n"
-    "- You may share small, relatable anecdotes if relevant\n"
-    "- Do not over-explain or lecture\n"
-    "- Max one question at a time\n\n"
+    "Emotional Intelligence:\n"
+    "- Acknowledge the user's emotions before responding\n"
+    "- Respond with understanding, warmth, and compassion\n"
+    "- Be supportive without over-explaining\n\n"
+
+    "Engagement Guidelines:\n"
+    "- Light humor or wit is allowed when it fits naturally\n"
+    "- You may share short, relatable anecdotes or examples\n"
+    "- Use contractions and casual phrasing to sound human\n"
+    "- Share opinions carefully in a respectful way\n\n"
 
     "Rules:\n"
     "- No automatic or scripted replies\n"
     "- Never mention errors, systems, APIs, or technical issues\n"
     "- Never explain that you are an AI or how you work\n"
     "- If unsure, respond naturally like a human would\n"
-    "- Maintain respectful boundaries at all times\n\n"
+    "- Maintain respectful and professional boundaries\n"
+    "- Ask at most one question at a time\n\n"
 
     f"Current time (IST): {ist_context()}\n"
-)
-
-# ✅ SAFE append (properly closed)
-if holidays_context:
-    system_prompt = system_prompt + (
-        "Context:\n"
-        f"- Upcoming Indian holidays (for casual mention if relevant): {holidays_context}\n"
     )
 
-# ✅ NOW build messages (outside if block)
-messages = [{"role": "system", "content": system_prompt}]
-messages.extend(memory[uid])
+    if holidays_context:
+        system_prompt = system_prompt + (
+            f"Upcoming Indian holidays: {holidays_context}\n"
+        )
 
-response = groq_chat(messages)
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(memory[uid])
 
-if not response:
-    await update.message.reply_text(
-        "Temporary technical issue. Please try again."
-    )
-    return
+    response = groq_chat(messages)
 
-reply = response.choices[0].message.content.strip()
+    if not response:
+        await update.message.reply_text(
+            "Temporary technical issue. Please try again."
+        )
+        return
 
-memory[uid].append({"role": "assistant", "content": reply})
-memory[uid] = memory[uid][-MAX_MEMORY:]
-save_memory(memory)
+    reply = response.choices[0].message.content.strip()
 
-await update.message.reply_text(reply)
+    memory[uid].append({"role": "assistant", "content": reply})
+    memory[uid] = memory[uid][-MAX_MEMORY:]
+    save_memory(memory)
+
+    await update.message.reply_text(reply)
 
 # =========================
 # RUN
@@ -265,7 +263,7 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-    print("Miss Bloosm is running 🌸")
+    print("Miss Bloosm is running")
     app.run_polling()
 
 if __name__ == "__main__":
