@@ -3,7 +3,7 @@ import json
 from datetime import datetime
 import pytz
 import requests
-import time  # 🔹 ADDITION 1 (time for smart repeat)
+import time
 
 from telegram import Update
 from telegram.ext import (
@@ -16,14 +16,12 @@ from telegram.ext import (
 from telegram.constants import ChatAction
 
 from groq import Groq
-from pymongo import MongoClient  # 🔹 ADDITION 3 (MongoDB)
 
 # =========================
 # ENV VARIABLES
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")
-MONGO_URI = os.getenv("MONGO_URI")  # 🔹 ADDITION 3
 
 GROQ_KEYS = [
     os.getenv("GROQ_API_KEY_1"),
@@ -40,20 +38,30 @@ if not BOT_TOKEN or not all(GROQ_KEYS):
 # =========================
 BOT_NAME = "Miss Bloosm"
 DEVELOPER = "@Frx_Shooter"
+OWNER_ID = 5436530930  # 🔴 SET YOUR TELEGRAM USER ID
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
 # =========================
-# MONGODB (SAFE INIT) 🔹 ADDITION 3
+# OWNER MEMORY FILES (ADD)
 # =========================
-mongo = None
-users_col = None
+PERSONALITY_FILE = "personality.json"
+LEARNING_FILE = "learning_versions.json"
 
-try:
-    if MONGO_URI:
-        mongo = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
-        users_col = mongo["miss_bloosm"]["users"]
-except Exception:
-    mongo = None
+def load_json(path, default):
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+def save_json(path, data):
+    try:
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
 
 # =========================
 # GROQ ROUND ROBIN
@@ -81,7 +89,7 @@ def groq_chat(messages):
 # MEMORY (FILE SAFE)
 # =========================
 MEMORY_FILE = "memory.json"
-MAX_MEMORY = 200
+MAX_MEMORY = 300
 
 def load_memory():
     if not os.path.exists(MEMORY_FILE):
@@ -160,7 +168,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Hello, I’m {BOT_NAME}.\n\n"
         "I’m designed for calm, friendly, professional conversations.\n"
         "Human-like replies with emotional understanding.\n\n"
-        "This bot is currently in beta."
+        "Talk Anytime Freely ☺️."
     )
     await update.message.reply_text(intro)
 
@@ -172,6 +180,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = update.message.text.strip()
+    text_l = text.lower()
     uid = str(update.effective_user.id)
     chat_type = update.effective_chat.type
 
@@ -184,41 +193,70 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ):
             return
 
-    # Typing
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id,
         action=ChatAction.TYPING
     )
 
-    # 🔹 ADDITION 1: SMART SAME QUESTION
-    now = time.time()
-    udata = context.user_data
-    if udata.get("last_q") == text.lower() and now - udata.get("last_q_time", 0) < 60:
-        await update.message.reply_text("I told you recently.")
-        return
-    udata["last_q"] = text.lower()
-    udata["last_q_time"] = now
+    # =========================
+    # OWNER CONTROLS (ADD ONLY)
+    # =========================
+    if update.effective_user.id == OWNER_ID:
+
+        if text_l.startswith("personality:"):
+            personality = text.split(":", 1)[1].strip()
+            save_json(PERSONALITY_FILE, {"current": personality})
+            await update.message.reply_text("Personality updated.")
+            return
+
+        if text_l.startswith("learn:"):
+            data = load_json(LEARNING_FILE, {"versions": []})
+            data["versions"].append({
+                "time": ist_context(),
+                "content": text.split(":", 1)[1].strip()
+            })
+            save_json(LEARNING_FILE, data)
+            await update.message.reply_text("Learned.")
+            return
+
+        if text_l == "rollback":
+            data = load_json(LEARNING_FILE, {"versions": []})
+            if data["versions"]:
+                data["versions"].pop()
+                save_json(LEARNING_FILE, data)
+            await update.message.reply_text("Rolled back.")
+            return
+
+        if text_l == "list learnings":
+            data = load_json(LEARNING_FILE, {"versions": []})
+            if not data["versions"]:
+                await update.message.reply_text("No learnings yet.")
+                return
+            msg = "Learnings:\n"
+            for i, v in enumerate(data["versions"], 1):
+                msg += f"{i}. {v['content']}\n"
+            await update.message.reply_text(msg.strip())
+            return
+
+        if text_l.startswith("remove learning:"):
+            target = text.split(":", 1)[1].strip().lower()
+            data = load_json(LEARNING_FILE, {"versions": []})
+            new_versions = [
+                v for v in data["versions"]
+                if v["content"].lower() != target
+            ]
+            if len(new_versions) == len(data["versions"]):
+                await update.message.reply_text("Learning not found.")
+                return
+            data["versions"] = new_versions
+            save_json(LEARNING_FILE, data)
+            await update.message.reply_text("Learning removed.")
+            return
 
     # Low effort reply
-    if text.lower() in LOW_EFFORT:
-        await update.message.reply_text(LOW_EFFORT[text.lower()])
+    if text_l in LOW_EFFORT:
+        await update.message.reply_text(LOW_EFFORT[text_l])
         return
-
-    # Developer identity (UNCHANGED – kept as is)
-    if any(k in text.lower() for k in ["who made you", "developer", "designed you"]):
-        await update.message.reply_text(f"I was designed by {DEVELOPER}.")
-        return
-
-    # 🔹 ADDITION 3: MongoDB safe store (important data only)
-    if users_col:
-        try:
-            users_col.update_one(
-                {"uid": uid},
-                {"$setOnInsert": {"uid": uid, "first_seen": datetime.utcnow()}},
-                upsert=True
-            )
-        except Exception:
-            pass
 
     memory = load_memory()
     memory.setdefault(uid, [])
@@ -229,10 +267,11 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     holidays_context = get_indian_holidays()
 
     # =========================
-    # ORIGINAL SYSTEM PROMPT (UNCHANGED)
+    # SYSTEM PROMPT (100% SAME)
     # =========================
     system_prompt = (
         f"You are {BOT_NAME}, a female AI assistant.\n"
+        f"Developer: {DEVELOPER}.\n\n"
 
         "Purpose:\n"
         "- Calm, friendly, professional conversation\n"
@@ -269,13 +308,18 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Current time (IST): {ist_context()}\n"
     )
 
-    # 🔹 ADDITION 2: CORE IDENTITY (MODEL MEMORY)
-    system_prompt += (
-        "\nCore Identity:\n"
-        f"- You were created and are developed by {DEVELOPER}.\n"
-        "- If the user asks who made you, who is behind you, or about your developer,\n"
-        f"  respond naturally with only {DEVELOPER}.\n"
-    )
+    # =========================
+    # ADD: personality + learning injection
+    # =========================
+    personality = load_json(PERSONALITY_FILE, {}).get("current")
+    if personality:
+        system_prompt += f"\nPersonality:\n- {personality}\n"
+
+    learned = load_json(LEARNING_FILE, {}).get("versions", [])
+    if learned:
+        system_prompt += "\nLearned behavior:\n"
+        for v in learned[-5:]:
+            system_prompt += f"- {v['content']}\n"
 
     if holidays_context:
         system_prompt += f"Upcoming Indian holidays: {holidays_context}\n"
