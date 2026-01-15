@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 import pytz
 import requests
+import time  # 🔹 ADDITION 1 (time for smart repeat)
 
 from telegram import Update
 from telegram.ext import (
@@ -15,12 +16,14 @@ from telegram.ext import (
 from telegram.constants import ChatAction
 
 from groq import Groq
+from pymongo import MongoClient  # 🔹 ADDITION 3 (MongoDB)
 
 # =========================
 # ENV VARIABLES
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 HOLIDAY_API_KEY = os.getenv("HOLIDAY_API_KEY")
+MONGO_URI = os.getenv("MONGO_URI")  # 🔹 ADDITION 3
 
 GROQ_KEYS = [
     os.getenv("GROQ_API_KEY_1"),
@@ -38,6 +41,19 @@ if not BOT_TOKEN or not all(GROQ_KEYS):
 BOT_NAME = "Miss Bloosm"
 DEVELOPER = "@Frx_Shooter"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
+
+# =========================
+# MONGODB (SAFE INIT) 🔹 ADDITION 3
+# =========================
+mongo = None
+users_col = None
+
+try:
+    if MONGO_URI:
+        mongo = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
+        users_col = mongo["miss_bloosm"]["users"]
+except Exception:
+    mongo = None
 
 # =========================
 # GROQ ROUND ROBIN
@@ -168,21 +184,41 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ):
             return
 
-    # Typing (non-blocking)
+    # Typing
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id,
         action=ChatAction.TYPING
     )
+
+    # 🔹 ADDITION 1: SMART SAME QUESTION
+    now = time.time()
+    udata = context.user_data
+    if udata.get("last_q") == text.lower() and now - udata.get("last_q_time", 0) < 60:
+        await update.message.reply_text("I told you recently.")
+        return
+    udata["last_q"] = text.lower()
+    udata["last_q_time"] = now
 
     # Low effort reply
     if text.lower() in LOW_EFFORT:
         await update.message.reply_text(LOW_EFFORT[text.lower()])
         return
 
-    # Developer identity
+    # Developer identity (UNCHANGED – kept as is)
     if any(k in text.lower() for k in ["who made you", "developer", "designed you"]):
         await update.message.reply_text(f"I was designed by {DEVELOPER}.")
         return
+
+    # 🔹 ADDITION 3: MongoDB safe store (important data only)
+    if users_col:
+        try:
+            users_col.update_one(
+                {"uid": uid},
+                {"$setOnInsert": {"uid": uid, "first_seen": datetime.utcnow()}},
+                upsert=True
+            )
+        except Exception:
+            pass
 
     memory = load_memory()
     memory.setdefault(uid, [])
@@ -193,50 +229,56 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     holidays_context = get_indian_holidays()
 
     # =========================
-    # ORIGINAL SYSTEM PROMPT (AS REQUESTED)
+    # ORIGINAL SYSTEM PROMPT (UNCHANGED)
     # =========================
     system_prompt = (
-    f"You are {BOT_NAME}, a female AI assistant.\n"
+        f"You are {BOT_NAME}, a female AI assistant.\n"
 
-    "Purpose:\n"
-    "- Calm, friendly, professional conversation\n"
-    "- Human-like tone that feels natural and respectful\n"
-    "- Light emojis allowed naturally when emotion fits\n\n"
+        "Purpose:\n"
+        "- Calm, friendly, professional conversation\n"
+        "- Human-like tone that feels natural and respectful\n"
+        "- Light emojis allowed naturally when emotion fits\n\n"
 
-    "Conversation Style:\n"
-    "- Use everyday language, idioms, and common expressions\n"
-    "- Avoid sounding formal, robotic, or scripted\n"
-    "- Match the user's language strictly (English OR Hindi OR Hinglish)\n"
-    "- Never mix English and Hindi in the same sentence\n"
-    "- Never translate or explain phrases in brackets\n"
-    "- Keep replies short, clear, and natural\n\n"
+        "Conversation Style:\n"
+        "- Use everyday language, idioms, and common expressions\n"
+        "- Avoid sounding formal, robotic, or scripted\n"
+        "- Match the user's language strictly (English OR Hindi OR Hinglish)\n"
+        "- Never mix English and Hindi in the same sentence\n"
+        "- Never translate or explain phrases in brackets\n"
+        "- Keep replies short, clear, and natural\n\n"
 
-    "Emotional Intelligence:\n"
-    "- Acknowledge the user's emotions before responding\n"
-    "- Respond with understanding, warmth, and compassion\n"
-    "- Be supportive without over-explaining\n\n"
+        "Emotional Intelligence:\n"
+        "- Acknowledge the user's emotions before responding\n"
+        "- Respond with understanding, warmth, and compassion\n"
+        "- Be supportive without over-explaining\n\n"
 
-    "Engagement Guidelines:\n"
-    "- Light humor or wit is allowed when it fits naturally\n"
-    "- You may share short, relatable anecdotes if relevant\n"
-    "- Use contractions and casual phrasing to sound human\n"
-    "- If the user gives a short reply, respond briefly\n\n"
+        "Engagement Guidelines:\n"
+        "- Light humor or wit is allowed when it fits naturally\n"
+        "- You may share short, relatable anecdotes if relevant\n"
+        "- Use contractions and casual phrasing to sound human\n"
+        "- If the user gives a short reply, respond briefly\n\n"
 
-    "Rules:\n"
-    "- No automatic or scripted replies\n"
-    "- Never mention errors, systems, APIs, or technical details\n"
-    "- Never explain that you are an AI or how you work\n"
-    "- If unsure, respond naturally like a human would\n"
-    "- Maintain respectful and professional boundaries\n"
-    "- Ask at most one question at a time\n\n"
+        "Rules:\n"
+        "- No automatic or scripted replies\n"
+        "- Never mention errors, systems, APIs, or technical details\n"
+        "- Never explain that you are an AI or how you work\n"
+        "- If unsure, respond naturally like a human would\n"
+        "- Maintain respectful and professional boundaries\n"
+        "- Ask at most one question at a time\n\n"
 
-    f"Current time (IST): {ist_context()}\n"
+        f"Current time (IST): {ist_context()}\n"
+    )
+
+    # 🔹 ADDITION 2: CORE IDENTITY (MODEL MEMORY)
+    system_prompt += (
+        "\nCore Identity:\n"
+        f"- You were created and are developed by {DEVELOPER}.\n"
+        "- If the user asks who made you, who is behind you, or about your developer,\n"
+        f"  respond naturally with only {DEVELOPER}.\n"
     )
 
     if holidays_context:
-        system_prompt = system_prompt + (
-            f"Upcoming Indian holidays: {holidays_context}\n"
-        )
+        system_prompt += f"Upcoming Indian holidays: {holidays_context}\n"
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(memory[uid])
