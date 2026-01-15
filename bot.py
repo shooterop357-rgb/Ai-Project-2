@@ -229,31 +229,34 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     "- Maintain respectful boundaries at all times\n\n"
 
     f"Current time (IST): {ist_context()}\n"
-    )
+)
 
+# ✅ SAFE append (properly closed)
 if holidays_context:
-    system_prompt += (
+    system_prompt = system_prompt + (
         "Context:\n"
         f"- Upcoming Indian holidays (for casual mention if relevant): {holidays_context}\n"
-        
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(memory[uid])
+    )
 
-    response = groq_chat(messages)
+# ✅ NOW build messages (outside if block)
+messages = [{"role": "system", "content": system_prompt}]
+messages.extend(memory[uid])
 
-    if not response:
-        await update.message.reply_text(
-            "Temporary technical issue. Please try again."
-        )
-        return
+response = groq_chat(messages)
 
-    reply = response.choices[0].message.content.strip()
+if not response:
+    await update.message.reply_text(
+        "Temporary technical issue. Please try again."
+    )
+    return
 
-    memory[uid].append({"role": "assistant", "content": reply})
-    memory[uid] = memory[uid][-MAX_MEMORY:]
-    save_memory(memory)
+reply = response.choices[0].message.content.strip()
 
-    await update.message.reply_text(reply)
+memory[uid].append({"role": "assistant", "content": reply})
+memory[uid] = memory[uid][-MAX_MEMORY:]
+save_memory(memory)
+
+await update.message.reply_text(reply)
 
 # =========================
 # RUN
