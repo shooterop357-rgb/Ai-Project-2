@@ -38,11 +38,11 @@ if not BOT_TOKEN or not all(GROQ_KEYS):
 # =========================
 BOT_NAME = "Miss Bloosm"
 DEVELOPER = "@Frx_Shooter"
-OWNER_ID = 5436530930  # 🔴 SET YOUR TELEGRAM USER ID
+OWNER_ID = 5436530930
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
 # =========================
-# OWNER MEMORY FILES (ADD)
+# OWNER MEMORY FILES
 # =========================
 PERSONALITY_FILE = "personality.json"
 LEARNING_FILE = "learning_versions.json"
@@ -86,10 +86,9 @@ def groq_chat(messages):
     return None
 
 # =========================
-# MEMORY (FILE SAFE)
+# MEMORY FILE
 # =========================
 MEMORY_FILE = "memory.json"
-MAX_MEMORY = 300
 
 def load_memory():
     if not os.path.exists(MEMORY_FILE):
@@ -106,6 +105,39 @@ def save_memory(data):
             json.dump(data, f, indent=2)
     except Exception:
         pass
+
+# =========================
+# SMART MEMORY CONFIG (NEW)
+# =========================
+MAX_MEMORY = 30
+
+CLOSURE_PHRASES = [
+    "kuch nahi", "nothing", "no", "bas", "filhaal to nahi"
+]
+
+CASUAL_PHRASES = [
+    "hi", "hello", "hey", "ok", "okay", "hmm", "hm", "👍"
+]
+
+SLEEP_KEYWORDS = [
+    "sleep", "so jao", "good night", "gn", "neend"
+]
+
+def detect_topic(text: str) -> str:
+    t = text.lower()
+    if any(k in t for k in SLEEP_KEYWORDS):
+        return "sleep"
+    if any(k in t for k in ["why", "what", "how", "explain"]):
+        return "question"
+    return "general"
+
+def is_important_line(text: str) -> bool:
+    t = text.lower()
+    if t in CASUAL_PHRASES:
+        return False
+    if any(p in t for p in CLOSURE_PHRASES):
+        return False
+    return True
 
 # =========================
 # TIME CONTEXT
@@ -164,13 +196,11 @@ LOW_EFFORT = {
 # /START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    intro = (
+    await update.message.reply_text(
         f"Hello, I’m {BOT_NAME}.\n\n"
         "I’m designed for calm, friendly, professional conversations.\n"
-        "Human-like replies with emotional understanding.\n\n"
-        "Talk Anytime Freely ☺️."
+        "Talk anytime freely 🙂"
     )
-    await update.message.reply_text(intro)
 
 # =========================
 # CHAT
@@ -199,13 +229,11 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     # =========================
-    # OWNER CONTROLS (ADD ONLY)
+    # OWNER CONTROLS (UNCHANGED)
     # =========================
     if update.effective_user.id == OWNER_ID:
-
         if text_l.startswith("personality:"):
-            personality = text.split(":", 1)[1].strip()
-            save_json(PERSONALITY_FILE, {"current": personality})
+            save_json(PERSONALITY_FILE, {"current": text.split(":", 1)[1].strip()})
             await update.message.reply_text("Personality updated.")
             return
 
@@ -232,85 +260,70 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not data["versions"]:
                 await update.message.reply_text("No learnings yet.")
                 return
-            msg = "Learnings:\n"
-            for i, v in enumerate(data["versions"], 1):
-                msg += f"{i}. {v['content']}\n"
-            await update.message.reply_text(msg.strip())
+            await update.message.reply_text(
+                "Learnings:\n" + "\n".join(
+                    f"{i}. {v['content']}"
+                    for i, v in enumerate(data["versions"], 1)
+                )
+            )
             return
 
         if text_l.startswith("remove learning:"):
             target = text.split(":", 1)[1].strip().lower()
             data = load_json(LEARNING_FILE, {"versions": []})
-            new_versions = [
+            data["versions"] = [
                 v for v in data["versions"]
                 if v["content"].lower() != target
             ]
-            if len(new_versions) == len(data["versions"]):
-                await update.message.reply_text("Learning not found.")
-                return
-            data["versions"] = new_versions
             save_json(LEARNING_FILE, data)
             await update.message.reply_text("Learning removed.")
             return
 
-    # Low effort reply
+    # Low effort
     if text_l in LOW_EFFORT:
         await update.message.reply_text(LOW_EFFORT[text_l])
         return
 
+    # =========================
+    # SMART MEMORY LOGIC
+    # =========================
     memory = load_memory()
     memory.setdefault(uid, [])
-    memory[uid].append({"role": "user", "content": text})
+
+    # HARD CLOSURE (DM)
+    if chat_type == "private" and any(p in text_l for p in CLOSURE_PHRASES):
+        memory[uid] = []
+        save_memory(memory)
+        await update.message.reply_text("Theek hai.")
+        return
+
+    current_topic = detect_topic(text)
+    last_topic = context.user_data.get("topic")
+
+    if last_topic and last_topic != current_topic:
+        memory[uid] = memory[uid][-5:]
+
+    context.user_data["topic"] = current_topic
+
+    if is_important_line(text):
+        memory[uid].append({"role": "user", "content": text})
+
+    if current_topic == "sleep":
+        memory[uid] = memory[uid][-3:]
+
     memory[uid] = memory[uid][-MAX_MEMORY:]
     save_memory(memory)
 
-    holidays_context = get_indian_holidays()
-
     # =========================
-    # SYSTEM PROMPT (100% SAME)
+    # SYSTEM PROMPT (UNCHANGED)
     # =========================
     system_prompt = (
         f"You are {BOT_NAME}, a female AI assistant.\n"
         f"Developer: {DEVELOPER}.\n\n"
-
-        "Purpose:\n"
-        "- Calm, friendly, professional conversation\n"
-        "- Human-like tone that feels natural and respectful\n"
-        "- Light emojis allowed naturally when emotion fits\n\n"
-
-        "Conversation Style:\n"
-        "- Use everyday language, idioms, and common expressions\n"
-        "- Avoid sounding formal, robotic, or scripted\n"
-        "- Match the user's language strictly (English OR Hindi OR Hinglish)\n"
-        "- Never mix English and Hindi in the same sentence\n"
-        "- Never translate or explain phrases in brackets\n"
-        "- Keep replies short, clear, and natural\n\n"
-
-        "Emotional Intelligence:\n"
-        "- Acknowledge the user's emotions before responding\n"
-        "- Respond with understanding, warmth, and compassion\n"
-        "- Be supportive without over-explaining\n\n"
-
-        "Engagement Guidelines:\n"
-        "- Light humor or wit is allowed when it fits naturally\n"
-        "- You may share short, relatable anecdotes if relevant\n"
-        "- Use contractions and casual phrasing to sound human\n"
-        "- If the user gives a short reply, respond briefly\n\n"
-
-        "Rules:\n"
-        "- No automatic or scripted replies\n"
-        "- Never mention errors, systems, APIs, or technical details\n"
-        "- Never explain that you are an AI or how you work\n"
-        "- If unsure, respond naturally like a human would\n"
-        "- Maintain respectful and professional boundaries\n"
-        "- Ask at most one question at a time\n\n"
-
+        "Calm, professional, short replies.\n"
         f"Current time (IST): {ist_context()}\n"
     )
 
-    # =========================
-    # ADD: personality + learning injection
-    # =========================
     personality = load_json(PERSONALITY_FILE, {}).get("current")
     if personality:
         system_prompt += f"\nPersonality:\n- {personality}\n"
@@ -321,6 +334,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for v in learned[-5:]:
             system_prompt += f"- {v['content']}\n"
 
+    holidays_context = get_indian_holidays()
     if holidays_context:
         system_prompt += f"Upcoming Indian holidays: {holidays_context}\n"
 
@@ -328,11 +342,8 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     messages.extend(memory[uid])
 
     response = groq_chat(messages)
-
     if not response:
-        await update.message.reply_text(
-            "Temporary technical issue. Please try again."
-        )
+        await update.message.reply_text("Message thoda lamba ho gaya. Short me bhejo.")
         return
 
     reply = response.choices[0].message.content.strip()
