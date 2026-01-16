@@ -107,20 +107,25 @@ def save_memory(data):
         pass
 
 # =========================
-# SMART MEMORY CONFIG (NEW)
+# SMART MEMORY CONFIG (FIXED)
 # =========================
 MAX_MEMORY = 30
 
 CLOSURE_PHRASES = [
-    "kuch nahi", "nothing", "no", "bas", "filhaal to nahi"
+    "kuch nahi", "nothing", "no", "bas", "filhaal to nahi",
+    "theek hai", "thik hai", "ok", "okay"
 ]
 
 CASUAL_PHRASES = [
-    "hi", "hello", "hey", "ok", "okay", "hmm", "hm", "👍"
+    "hi", "hello", "hey", "hmm", "hm", "👍"
 ]
 
 SLEEP_KEYWORDS = [
     "sleep", "so jao", "good night", "gn", "neend"
+]
+
+NAME_TRIGGERS = [
+    "my name is", "i am", "mera naam"
 ]
 
 def detect_topic(text: str) -> str:
@@ -131,12 +136,32 @@ def detect_topic(text: str) -> str:
         return "question"
     return "general"
 
+def extract_name(text: str):
+    t = text.lower()
+    for trg in NAME_TRIGGERS:
+        if trg in t:
+            parts = text.split(trg, 1)[1].strip().split()
+            if parts:
+                name = parts[0].strip(",. ")
+                if name.isalpha() and len(name) <= 20:
+                    return name
+    return None
+
 def is_important_line(text: str) -> bool:
     t = text.lower()
+
+    # 🔹 Name is ALWAYS important
+    if extract_name(text):
+        return True
+
+    # 🔹 Casual / closure / sleep lines are NOT important
     if t in CASUAL_PHRASES:
         return False
     if any(p in t for p in CLOSURE_PHRASES):
         return False
+    if any(k in t for k in SLEEP_KEYWORDS):
+        return False
+
     return True
 
 # =========================
