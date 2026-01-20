@@ -265,8 +265,9 @@ def on_message(user_id: str, text: str):
 # ============================================================
 
 # ============================================================
+# # ============================================================
 # Miss Bloosm — Integration Layer
-# Part 3: Telegram Bot Adapter (FINAL FIXED)
+# Part 3: Telegram Bot Adapter (SINGLE FILE FIX)
 # ============================================================
 
 import os
@@ -280,12 +281,7 @@ from telegram.ext import (
 )
 
 # ------------------------------------------------------------
-# IMPORT CORE (SINGLE SOURCE OF TRUTH)
-# ------------------------------------------------------------
-import app  # app.py is your core file
-
-# ------------------------------------------------------------
-# ENV (Railway uses dashboard variables)
+# ENV
 # ------------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_BOT_TOKEN:
@@ -295,26 +291,23 @@ if not TELEGRAM_BOT_TOKEN:
 # TELEGRAM MESSAGE HANDLER
 # ------------------------------------------------------------
 async def telegram_on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Telegram → Core bridge
-    """
     if not update.message or not update.message.text:
         return
 
     user_id = update.message.from_user.id
     text = update.message.text
 
-    # Bridge send_message → Telegram
+    # Patch send_message locally (GLOBAL function)
     def telegram_send_message(uid: str, msg: str):
         asyncio.create_task(
             context.bot.send_message(chat_id=uid, text=msg)
         )
 
-    # 🔧 FIX: patch send_message on core only
-    app.send_message = telegram_send_message
+    global send_message
+    send_message = telegram_send_message
 
     # 🔑 SINGLE ENTRY
-    app.on_message(user_id, text)
+    on_message(user_id, text)
 
 # ------------------------------------------------------------
 # APP START
@@ -340,10 +333,6 @@ if __name__ == "__main__":
     import nest_asyncio
     nest_asyncio.apply()
     asyncio.get_event_loop().run_until_complete(main())
-
-# ============================================================
-# END OF PART 3
-# ============================================================
 
 # ============================================================
 # Miss Bloosm — Hardening Layer
