@@ -2,3 +2,4 @@ groq
 pymongo
 python-dotenv
 python-telegram-bot==20.7
+nest-asyncio
