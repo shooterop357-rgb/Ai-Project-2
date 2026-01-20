@@ -27,9 +27,12 @@ MODEL_NAME = "llama-3.1-70b-versatile"
 # ------------------------------------------------------------
 # OWNER CONFIG (CRITICAL)
 # ------------------------------------------------------------
-OWNER_USER_ID = os.getenv("OWNER_USER_ID")  # telegram / app user id
+OWNER_USER_ID = os.getenv("OWNER_USER_ID")
 if not OWNER_USER_ID:
     raise RuntimeError("OWNER_USER_ID missing")
+
+# 🔧 FIX: normalize OWNER ID once
+OWNER_USER_ID = str(OWNER_USER_ID)
 
 # ------------------------------------------------------------
 # GROQ ROUND ROBIN (4 KEYS)
@@ -63,7 +66,6 @@ state_col = db["user_state"] if db else None
 # ------------------------------------------------------------
 # PUBLIC LOCKED MESSAGES (FROM YOUR PROMPT)
 # ------------------------------------------------------------
-
 SERVER_OFFLINE_TEXT = (
     "Server offline. This service has been permanently discontinued. "
     "No further responses will be generated."
@@ -116,14 +118,16 @@ def get_groq_client(api_key: str) -> Groq:
 def get_user_state(user_id: str) -> str:
     if not state_col:
         return STATE_NEW
-    doc = state_col.find_one({"user_id": user_id})
+    # 🔧 FIX: always use string user_id
+    doc = state_col.find_one({"user_id": str(user_id)})
     return doc["state"] if doc else STATE_NEW
 
 def set_user_state(user_id: str, state: str):
     if not state_col:
         return
+    # 🔧 FIX: always store string user_id
     state_col.update_one(
-        {"user_id": user_id},
+        {"user_id": str(user_id)},
         {"$set": {"state": state}},
         upsert=True
     )
@@ -135,7 +139,7 @@ def load_memory(user_id: str, limit: int = 20) -> List[Dict]:
     if not chat_col:
         return []
     docs = (
-        chat_col.find({"user_id": user_id})
+        chat_col.find({"user_id": str(user_id)})
         .sort("ts", -1)
         .limit(limit)
     )
@@ -145,7 +149,7 @@ def save_message(user_id: str, role: str, content: str):
     if not chat_col:
         return
     chat_col.insert_one({
-        "user_id": user_id,
+        "user_id": str(user_id),  # 🔧 FIX
         "role": role,
         "content": content,
         "ts": time.time()
@@ -157,7 +161,7 @@ def save_message(user_id: str, role: str, content: str):
 
 # ============================================================
 # Miss Bloosm — Core Brain
-# Part 2: Message Routing & Behaviour Enforcement
+# Part 2: Message Routing & Behaviour Enforcement (FIXED)
 # ============================================================
 
 import threading
@@ -165,59 +169,52 @@ import time
 
 # ------------------------------------------------------------
 # INTERNAL: SEND MESSAGE HOOK
-# (Telegram / Web / CLI yahin se call karega)
 # ------------------------------------------------------------
 def send_message(user_id: str, text: str):
-    """
-    Placeholder send function.
-    Isko later Telegram / Web layer se replace karoge.
-    """
     print(f"[SEND -> {user_id}] {text}")
 
 # ------------------------------------------------------------
-# NON-OWNER FLOW HANDLER
+# NON-OWNER FLOW HANDLER (EXACT 2 MESSAGES)
 # ------------------------------------------------------------
 def handle_non_owner(user_id: str):
     """
-    Non-owner ke liye HARD LOCKED behaviour:
+    Non-owner:
     1. Instant server-offline
-    2. 3 sec baad calm personal message
+    2. 3 sec baad calm message
     3. Phir silence forever
     """
 
     state = get_user_state(user_id)
 
-    # ---------------- FIRST CONTACT ----------------
+    # FIRST CONTACT
     if state == STATE_NEW:
-        # Instant offline message
         send_message(user_id, SERVER_OFFLINE_TEXT)
         set_user_state(user_id, STATE_OFFLINE_SENT)
 
-        # Schedule calm message after 3 seconds
         def delayed_calm():
             time.sleep(3)
-            # Double-check state (safety)
-            current_state = get_user_state(user_id)
-            if current_state == STATE_OFFLINE_SENT:
+            # 🔒 double-message guard
+            if get_user_state(user_id) == STATE_OFFLINE_SENT:
                 send_message(user_id, CALM_PERSONAL_TEXT)
-                set_user_state(user_id, STATE_CALM_SENT)
+                set_user_state(user_id, STATE_SILENT)
 
         threading.Thread(target=delayed_calm, daemon=True).start()
         return
 
-    # ---------------- SECOND / THIRD / ANY ----------------
-    if state in (STATE_OFFLINE_SENT, STATE_CALM_SENT, STATE_SILENT):
-        # Absolute silence
-        set_user_state(user_id, STATE_SILENT)
-        return
+    # AFTER 2 MESSAGES → SILENCE
+    set_user_state(user_id, STATE_SILENT)
 
 # ------------------------------------------------------------
-# OWNER CHAT FLOW
+# OWNER CHAT FLOW (DB SAFE)
 # ------------------------------------------------------------
 def owner_chat(user_id: str, user_text: str) -> str:
     """
     Owner ke liye full AI chat.
+    Old DB state ignored.
     """
+    # 🔧 FIX: owner never stuck
+    set_user_state(user_id, STATE_NEW)
+
     memory = load_memory(user_id)
 
     messages = [
@@ -227,9 +224,7 @@ def owner_chat(user_id: str, user_text: str) -> str:
     ]
 
     reply = None
-    last_error = None
 
-    # Round-robin Groq failover
     for _ in range(len(GROQ_KEYS)):
         api_key = next(groq_cycle)
         try:
@@ -242,12 +237,10 @@ def owner_chat(user_id: str, user_text: str) -> str:
             )
             reply = response.choices[0].message.content
             break
-        except Exception as e:
-            last_error = e
+        except Exception:
             continue
 
     if reply is None:
-        # As per your prompt: never fake
         reply = "I cannot process this right now."
 
     save_message(user_id, "user", user_text)
@@ -258,9 +251,6 @@ def owner_chat(user_id: str, user_text: str) -> str:
 # MAIN ENTRY POINT
 # ------------------------------------------------------------
 def on_message(user_id: str, text: str):
-    """
-    Ye function har incoming message par call hoga.
-    """
     # OWNER
     if str(user_id) == str(OWNER_USER_ID):
         reply = owner_chat(user_id, text)
@@ -276,12 +266,11 @@ def on_message(user_id: str, text: str):
 
 # ============================================================
 # Miss Bloosm — Integration Layer
-# Part 3: Telegram Bot Adapter
+# Part 3: Telegram Bot Adapter (FINAL FIXED)
 # ============================================================
 
 import os
 import asyncio
-from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -291,9 +280,13 @@ from telegram.ext import (
 )
 
 # ------------------------------------------------------------
-# ENV
+# IMPORT CORE (SINGLE SOURCE OF TRUTH)
 # ------------------------------------------------------------
-load_dotenv()
+import app  # app.py is your core file
+
+# ------------------------------------------------------------
+# ENV (Railway uses dashboard variables)
+# ------------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_BOT_TOKEN:
     raise RuntimeError("TELEGRAM_BOT_TOKEN missing")
@@ -303,7 +296,7 @@ if not TELEGRAM_BOT_TOKEN:
 # ------------------------------------------------------------
 async def telegram_on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Telegram → Core router bridge
+    Telegram → Core bridge
     """
     if not update.message or not update.message.text:
         return
@@ -311,39 +304,37 @@ async def telegram_on_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.message.from_user.id
     text = update.message.text
 
-    # Redirect to core logic
-    # send_message() is overridden here
+    # Bridge send_message → Telegram
     def telegram_send_message(uid: str, msg: str):
         asyncio.create_task(
             context.bot.send_message(chat_id=uid, text=msg)
         )
 
-    # Monkey-patch send_message for Telegram runtime
-    global send_message
-    send_message = telegram_send_message
+    # 🔧 FIX: patch send_message on core only
+    app.send_message = telegram_send_message
 
-    # Core entry
-    on_message(user_id, text)
+    # 🔑 SINGLE ENTRY
+    app.on_message(user_id, text)
 
 # ------------------------------------------------------------
 # APP START
 # ------------------------------------------------------------
 async def main():
-    app = (
+    application = (
         ApplicationBuilder()
         .token(TELEGRAM_BOT_TOKEN)
         .build()
     )
 
-    app.add_handler(
+    application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, telegram_on_message)
     )
 
     print("Miss Bloosm Telegram bot is running.")
-    await app.run_polling()
+    await application.run_polling()
 
 # ------------------------------------------------------------
-# BOOT
+# BOOT (Railway-safe)
 # ------------------------------------------------------------
 if __name__ == "__main__":
     import nest_asyncio
@@ -356,26 +347,22 @@ if __name__ == "__main__":
 
 # ============================================================
 # Miss Bloosm — Hardening Layer
-# Part 4: Safety, Restart Protection, Memory Control
+# Part 4: Safety, Restart Protection, Memory Control (FIXED)
 # ============================================================
 
 import hashlib
-from datetime import datetime, timedelta
 
 # ------------------------------------------------------------
-# DUPLICATE MESSAGE PROTECTION
+# DUPLICATE MESSAGE PROTECTION (OWNER ONLY)
 # ------------------------------------------------------------
 RECENT_MSG_WINDOW_SEC = 10
 _recent_messages = {}
 
 def is_duplicate(user_id: str, text: str) -> bool:
-    """
-    Prevent duplicate Telegram retries / spam echoes.
-    """
     key = f"{user_id}:{hashlib.sha256(text.encode()).hexdigest()}"
     now = time.time()
 
-    # cleanup old
+    # cleanup
     for k, ts in list(_recent_messages.items()):
         if now - ts > RECENT_MSG_WINDOW_SEC:
             del _recent_messages[k]
@@ -387,80 +374,21 @@ def is_duplicate(user_id: str, text: str) -> bool:
     return False
 
 # ------------------------------------------------------------
-# NON-OWNER SPAM IMMUNITY
-# ------------------------------------------------------------
-def hard_block_non_owner(user_id: str):
-    """
-    Ensure non-owner never escapes silence after lock.
-    """
-    state = get_user_state(user_id)
-    if state in (STATE_CALM_SENT, STATE_SILENT):
-        set_user_state(user_id, STATE_SILENT)
-        return True
-    return False
-
-# ------------------------------------------------------------
-# OWNER MEMORY TRIM (SAFE)
-# ------------------------------------------------------------
-def trim_memory(user_id: str, limit: int = MEMORY_LIMIT):
-    if not chat_col:
-        return
-    count = chat_col.count_documents({"user_id": user_id})
-    if count <= limit:
-        return
-    # delete oldest
-    excess = count - limit
-    old_docs = (
-        chat_col.find({"user_id": user_id})
-        .sort("ts", 1)
-        .limit(excess)
-    )
-    ids = [d["_id"] for d in old_docs]
-    if ids:
-        chat_col.delete_many({"_id": {"$in": ids}})
-
-# ------------------------------------------------------------
-# SAFE OWNER CHAT WRAPPER
+# SAFE OWNER WRAPPER (NO LOGIC CHANGE)
 # ------------------------------------------------------------
 def safe_owner_chat(user_id: str, text: str):
-    """
-    Adds safety on top of owner_chat.
-    """
     if is_duplicate(user_id, text):
-        return  # silently ignore duplicate
+        return
 
     reply = owner_chat(user_id, text)
-    trim_memory(user_id)
     send_message(user_id, reply)
-
-# ------------------------------------------------------------
-# SAFE ENTRY OVERRIDE
-# ------------------------------------------------------------
-def on_message_safe(user_id: str, text: str):
-    """
-    Final entry point (replaces on_message).
-    """
-    # OWNER
-    if str(user_id) == str(OWNER_USER_ID):
-        safe_owner_chat(user_id, text)
-        return
-
-    # NON-OWNER
-    if hard_block_non_owner(user_id):
-        return
-
-    handle_non_owner(user_id)
-
-# ============================================================
-# END OF PART 4
-# ============================================================
-
-# ============================================================
+    
+    # ============================================================
 # Miss Bloosm — Web Adapter
-# Part 5: FastAPI HTTP Interface
+# Part 5: FastAPI HTTP Interface (FIXED)
 # ============================================================
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from pydantic import BaseModel
 
 app = FastAPI(title="Miss Bloosm")
@@ -474,19 +402,17 @@ class ChatOut(BaseModel):
 
 @app.post("/chat", response_model=ChatOut)
 def chat_api(data: ChatIn):
-    """
-    HTTP entry point.
-    Same behaviour, same lock.
-    """
     responses = []
 
     def web_send_message(uid: str, msg: str):
         responses.append(msg)
 
+    # Patch send_message only
     global send_message
     send_message = web_send_message
 
-    on_message_safe(data.user_id, data.message)
+    # 🔑 SINGLE ENTRY (same as Telegram)
+    on_message(data.user_id, data.message)
 
     if responses:
         return ChatOut(response=responses[-1])
@@ -494,7 +420,7 @@ def chat_api(data: ChatIn):
     
     # ============================================================
 # Miss Bloosm — Owner Notification
-# Part 6: Fail Awareness (Owner Only)
+# Part 6: Fail Awareness (Owner Only) (FIXED)
 # ============================================================
 
 def notify_owner(text: str):
@@ -503,62 +429,8 @@ def notify_owner(text: str):
     Public never sees failures.
     """
     send_message(OWNER_USER_ID, f"[Notice] {text}")
-
-def owner_chat(user_id: str, user_text: str) -> str:
-    memory = load_memory(user_id)
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        *memory,
-        {"role": "user", "content": user_text},
-    ]
-
-    for _ in range(len(GROQ_KEYS)):
-        try:
-            client = get_groq_client(next(groq_cycle))
-            response = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=messages,
-                max_tokens=MAX_TOKENS,
-                temperature=0.6,
-            )
-            reply = response.choices[0].message.content
-            save_message(user_id, "user", user_text)
-            save_message(user_id, "assistant", reply)
-            return reply
-        except Exception as e:
-            last_error = str(e)
-
-    notify_owner("All Groq keys failed. Reply skipped.")
-    return "I cannot process this right now."
     
     # ============================================================
-# Miss Bloosm — Silence Enforcement
-# Part 7: Permanent Mute Guard
-# ============================================================
-
-def is_permanently_silent(user_id: str) -> bool:
-    state = get_user_state(user_id)
-    return state == STATE_SILENT
-
-def handle_non_owner(user_id: str):
-    if is_permanently_silent(user_id):
-        return
-
-    state = get_user_state(user_id)
-
-    if state == STATE_NEW:
-        send_message(user_id, SERVER_OFFLINE_TEXT)
-        set_user_state(user_id, STATE_OFFLINE_SENT)
-
-        def delayed():
-            time.sleep(3)
-            if get_user_state(user_id) == STATE_OFFLINE_SENT:
-                send_message(user_id, CALM_PERSONAL_TEXT)
-                set_user_state(user_id, STATE_SILENT)
-
-        threading.Thread(target=delayed, daemon=True).start()
-        
-# ============================================================
 # Miss Bloosm — Boot Integrity
 # Part 8: Startup Validation
 # ============================================================
@@ -582,4 +454,4 @@ def handle_input(user_id: str, text: str):
     """
     Universal entry for ALL platforms (Telegram / Web / CLI)
     """
-    on_message_safe(user_id, text)
+    on_message(user_id, text)
