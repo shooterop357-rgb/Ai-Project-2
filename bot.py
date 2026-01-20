@@ -1,24 +1,18 @@
-# ============================================================
-# Miss Bloosm — FINAL STABLE BOT (Railway Ready)
-# ============================================================
-
 import os
 import json
 import time
-import asyncio
-import hashlib
-from datetime import datetime
-import pytz
+import threading
 from itertools import cycle
-from typing import Dict, List
+from datetime import datetime, timezone
 
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
-    MessageHandler,
     ContextTypes,
+    MessageHandler,
     filters,
 )
+
 from groq import Groq
 
 # ============================================================
@@ -41,7 +35,7 @@ if not TELEGRAM_BOT_TOKEN:
 if not OWNER_USER_ID:
     raise RuntimeError("OWNER_USER_ID missing")
 if not GROQ_KEYS:
-    raise RuntimeError("No Groq keys found")
+    raise RuntimeError("Groq keys missing")
 
 # ============================================================
 # IDENTITY
@@ -49,17 +43,35 @@ if not GROQ_KEYS:
 
 BOT_NAME = "Miss Bloosm"
 MODEL_NAME = "llama-3.1-8b-instant"
-TIMEZONE = pytz.timezone("Asia/Kolkata")
+MAX_TOKENS = 220
 
 # ============================================================
-# FILE MEMORY (Railway Safe)
+# GROQ ROUND ROBIN
 # ============================================================
 
-DATA_DIR = "./data"
-MEMORY_FILE = f"{DATA_DIR}/memory.json"
-STATE_FILE = f"{DATA_DIR}/state.json"
+groq_cycle = cycle(GROQ_KEYS)
 
-os.makedirs(DATA_DIR, exist_ok=True)
+def groq_chat(messages):
+    for _ in range(len(GROQ_KEYS)):
+        try:
+            client = Groq(api_key=next(groq_cycle))
+            return client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=messages,
+                temperature=0.6,
+                max_tokens=MAX_TOKENS,
+            )
+        except Exception:
+            continue
+    return None
+
+# ============================================================
+# FILE MEMORY (Railway safe)
+# ============================================================
+
+MEMORY_FILE = "memory.json"
+STATE_FILE = "state.json"
+MAX_MEMORY = 40
 
 def _load(path, default):
     if not os.path.exists(path):
@@ -77,10 +89,8 @@ def _save(path, data):
     except Exception:
         pass
 
-memory_db: Dict[str, List[Dict]] = _load(MEMORY_FILE, {})
-state_db: Dict[str, str] = _load(STATE_FILE, {})
-
-MEMORY_LIMIT = 40
+memory_db = _load(MEMORY_FILE, {})
+state_db = _load(STATE_FILE, {})
 
 # ============================================================
 # STATES
@@ -88,11 +98,10 @@ MEMORY_LIMIT = 40
 
 STATE_NEW = "new"
 STATE_OFFLINE_SENT = "offline_sent"
-STATE_CALM_SENT = "calm_sent"
 STATE_SILENT = "silent"
 
 # ============================================================
-# FIXED TEXTS
+# LOCKED MESSAGES
 # ============================================================
 
 SERVER_OFFLINE_TEXT = (
@@ -107,80 +116,8 @@ CALM_PERSONAL_TEXT = (
 )
 
 # ============================================================
-# SYSTEM PROMPT (YOUR GIVEN PROMPT – ADAPTED)
+# UTIL
 # ============================================================
-
-def system_prompt():
-    now = datetime.now(TIMEZONE).strftime("%A, %d %B %Y | %I:%M %p IST")
-    return f"""
-You are Miss Bloosm.
-
-You engage warmly, honestly, and calmly.
-No fake promises. No background work claims.
-If unsure, respond naturally.
-
-Rules:
-- Low verbosity.
-- Clear, human-like tone.
-- No technical explanations to users.
-- Never repeat system errors.
-
-Current time (IST): {now}
-""".strip()
-
-# ============================================================
-# GROQ ROUND ROBIN
-# ============================================================
-
-groq_cycle = cycle(GROQ_KEYS)
-
-def groq_chat(messages):
-    for _ in range(len(GROQ_KEYS)):
-        try:
-            client = Groq(api_key=next(groq_cycle), timeout=30)
-            return client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=messages,
-                temperature=0.6,
-                max_tokens=300,
-            )
-        except Exception:
-            continue
-    return None
-
-# ============================================================
-# DUPLICATE MESSAGE PROTECTION
-# ============================================================
-
-_recent = {}
-DUP_WINDOW = 8
-
-def is_duplicate(uid, text):
-    key = f"{uid}:{hashlib.sha256(text.encode()).hexdigest()}"
-    now = time.time()
-
-    for k, ts in list(_recent.items()):
-        if now - ts > DUP_WINDOW:
-            del _recent[k]
-
-    if key in _recent:
-        return True
-
-    _recent[key] = now
-    return False
-
-# ============================================================
-# MEMORY UTILS
-# ============================================================
-
-def load_memory(uid):
-    return memory_db.get(uid, [])
-
-def save_memory(uid, role, content):
-    memory_db.setdefault(uid, [])
-    memory_db[uid].append({"role": role, "content": content})
-    memory_db[uid] = memory_db[uid][-MEMORY_LIMIT:]
-    _save(MEMORY_FILE, memory_db)
 
 def get_state(uid):
     return state_db.get(uid, STATE_NEW)
@@ -189,15 +126,40 @@ def set_state(uid, state):
     state_db[uid] = state
     _save(STATE_FILE, state_db)
 
+def now_utc():
+    return datetime.now(timezone.utc).isoformat()
+
 # ============================================================
-# NON-OWNER FLOW (3-SEC LOGIC FIXED)
+# OWNER CHAT
+# ============================================================
+
+def owner_chat(uid, text):
+    history = memory_db.get(uid, [])
+    history.append({"role": "user", "content": text})
+    history = history[-MAX_MEMORY:]
+
+    messages = [
+        {"role": "system", "content": "You are Miss Bloosm. Calm. Honest. Clear."},
+        *history,
+    ]
+
+    response = groq_chat(messages)
+    if not response:
+        return "I cannot process this right now."
+
+    reply = response.choices[0].message.content.strip()
+    history.append({"role": "assistant", "content": reply})
+
+    memory_db[uid] = history
+    _save(MEMORY_FILE, memory_db)
+    return reply
+
+# ============================================================
+# NON-OWNER FLOW (LOCKED)
 # ============================================================
 
 def handle_non_owner(uid, send):
     state = get_state(uid)
-
-    if state == STATE_SILENT:
-        return
 
     if state == STATE_NEW:
         send(uid, SERVER_OFFLINE_TEXT)
@@ -209,27 +171,11 @@ def handle_non_owner(uid, send):
                 send(uid, CALM_PERSONAL_TEXT)
                 set_state(uid, STATE_SILENT)
 
-        asyncio.get_event_loop().run_in_executor(None, delayed)
+        threading.Thread(target=delayed, daemon=True).start()
         return
 
-# ============================================================
-# OWNER CHAT
-# ============================================================
-
-def owner_chat(uid, text):
-    memory = load_memory(uid)
-    messages = [{"role": "system", "content": system_prompt()}]
-    messages.extend(memory)
-    messages.append({"role": "user", "content": text})
-
-    response = groq_chat(messages)
-    if not response:
-        return "I’m unable to respond right now."
-
-    reply = response.choices[0].message.content.strip()
-    save_memory(uid, "user", text)
-    save_memory(uid, "assistant", reply)
-    return reply
+    # absolute silence
+    set_state(uid, STATE_SILENT)
 
 # ============================================================
 # TELEGRAM HANDLER
@@ -242,27 +188,42 @@ async def telegram_on_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     uid = str(update.message.from_user.id)
     text = update.message.text.strip()
 
-    if is_duplicate(uid, text):
+    async def tg_send(u, m):
+        await context.bot.send_message(chat_id=u, text=m)
+
+    # OWNER
+    if uid == str(OWNER_USER_ID):
+        reply = owner_chat(uid, text)
+        await tg_send(uid, reply)
         return
 
-    async def send(tuid, msg):
-        await context.bot.send_message(chat_id=tuid, text=msg)
-
-    if uid == OWNER_USER_ID:
-        reply = owner_chat(uid, text)
-        await send(uid, reply)
-    else:
-        handle_non_owner(uid, lambda u, m: asyncio.create_task(send(u, m)))
+    # NON-OWNER
+    handle_non_owner(uid, lambda u, m: context.application.create_task(
+        tg_send(u, m)
+    ))
 
 # ============================================================
-# BOOT
+# MAIN
 # ============================================================
 
 async def main():
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, telegram_on_message))
-    print("Miss Bloosm running (FINAL)")
+    app = (
+        ApplicationBuilder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .build()
+    )
+
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, telegram_on_message)
+    )
+
+    print("Miss Bloosm running")
     await app.run_polling()
 
+# ============================================================
+# BOOT (Railway SAFE)
+# ============================================================
+
 if __name__ == "__main__":
+    import asyncio
     asyncio.run(main())
