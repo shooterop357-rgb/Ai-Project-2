@@ -1,7 +1,6 @@
 import os
 import json
 import time
-import threading
 from itertools import cycle
 
 from telegram import Update
@@ -64,7 +63,7 @@ def groq_chat(messages):
     return None
 
 # =========================
-# FILE MEMORY (Railway)
+# FILE MEMORY
 # =========================
 MEMORY_FILE = "memory.json"
 STATE_FILE = "state.json"
@@ -105,14 +104,14 @@ SERVER_OFFLINE_TEXT = (
 )
 
 CALM_PERSONAL_TEXT = (
-    "I am looking, at peace in my own world, away from noise and questions, "
+    "I am Looking, at peace in my own world, away from noise and questions, "
     "existing peacefully in my own inner garden. I am not missing, not hiding, "
     "not lost—just choosing stillness and living somewhere only I can reach. "
     "Good bye 👋"
 )
 
 # =========================
-# HELPERS
+# STATE HELPERS
 # =========================
 def get_state(uid):
     return state_db.get(uid, STATE_NEW)
@@ -146,25 +145,13 @@ def owner_chat(uid, text):
     return reply
 
 # =========================
-# NON-OWNER FLOW (2 MESSAGES ONLY)
+# JOB QUEUE CALLBACK (FIX)
 # =========================
-def handle_non_owner(uid, send_fn):
-    state = get_state(uid)
-
-    if state == STATE_NEW:
-        send_fn(uid, SERVER_OFFLINE_TEXT)
-        set_state(uid, STATE_OFFLINE_SENT)
-
-        def delayed():
-            time.sleep(3)
-            if get_state(uid) == STATE_OFFLINE_SENT:
-                send_fn(uid, CALM_PERSONAL_TEXT)
-                set_state(uid, STATE_SILENT)
-
-        threading.Thread(target=delayed, daemon=True).start()
-        return
-
-    set_state(uid, STATE_SILENT)
+async def send_calm_message(context: ContextTypes.DEFAULT_TYPE):
+    uid = context.job.data
+    if get_state(uid) == STATE_OFFLINE_SENT:
+        await context.bot.send_message(chat_id=uid, text=CALM_PERSONAL_TEXT)
+        set_state(uid, STATE_SILENT)
 
 # =========================
 # TELEGRAM HANDLER
@@ -176,27 +163,38 @@ async def telegram_on_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     uid = str(update.message.from_user.id)
     text = update.message.text.strip()
 
-    async def send(u, m):
-        await context.bot.send_message(chat_id=u, text=m)
-
+    # OWNER
     if uid == str(OWNER_USER_ID):
         reply = owner_chat(uid, text)
-        await send(uid, reply)
-    else:
-        handle_non_owner(
-            uid,
-            lambda u, m: context.application.create_task(send(u, m))
+        await context.bot.send_message(chat_id=uid, text=reply)
+        return
+
+    # NON OWNER
+    state = get_state(uid)
+
+    if state == STATE_NEW:
+        await context.bot.send_message(chat_id=uid, text=SERVER_OFFLINE_TEXT)
+        set_state(uid, STATE_OFFLINE_SENT)
+
+        # ✅ SAFE DELAY (3 sec)
+        context.job_queue.run_once(
+            send_calm_message,
+            when=3,
+            data=uid
         )
+        return
+
+    set_state(uid, STATE_SILENT)
 
 # =========================
-# MAIN (Railway SAFE)
+# MAIN
 # =========================
 def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, telegram_on_message)
     )
-    print("Miss Bloosm running (FINAL)")
+    print("Miss Bloosm running (STABLE)")
     app.run_polling()
 
 if __name__ == "__main__":
