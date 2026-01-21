@@ -42,7 +42,7 @@ BOT_NAME = "Miss Bloosm"
 MODEL_NAME = "llama-3.1-8b-instant"
 
 # =========================
-# ROUND ROBIN (OLD STABLE)
+# GROQ ROUND ROBIN
 # =========================
 groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
 rr_index = 0
@@ -105,11 +105,12 @@ SERVER_OFFLINE_TEXT = (
 )
 
 CALM_PERSONAL_TEXT = (
-    "I am personal, at peace in my own world, away from noise and questions, "
+    "I am looking, at peace in my own world, away from noise and questions, "
     "existing peacefully in my own inner garden. I am not missing, not hiding, "
     "not lost—just choosing stillness and living somewhere only I can reach. "
     "Good bye 👋"
 )
+
 # =========================
 # HELPERS
 # =========================
@@ -145,19 +146,19 @@ def owner_chat(uid, text):
     return reply
 
 # =========================
-# NON-OWNER FLOW (2 MSG ONLY)
+# NON-OWNER FLOW (2 MESSAGES ONLY)
 # =========================
-def handle_non_owner(uid, send):
+def handle_non_owner(uid, send_fn):
     state = get_state(uid)
 
     if state == STATE_NEW:
-        send(uid, SERVER_OFFLINE_TEXT)
+        send_fn(uid, SERVER_OFFLINE_TEXT)
         set_state(uid, STATE_OFFLINE_SENT)
 
         def delayed():
             time.sleep(3)
             if get_state(uid) == STATE_OFFLINE_SENT:
-                send(uid, CALM_PERSONAL_TEXT)
+                send_fn(uid, CALM_PERSONAL_TEXT)
                 set_state(uid, STATE_SILENT)
 
         threading.Thread(target=delayed, daemon=True).start()
@@ -182,17 +183,21 @@ async def telegram_on_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply = owner_chat(uid, text)
         await send(uid, reply)
     else:
-        handle_non_owner(uid, lambda u, m: context.application.create_task(send(u, m)))
+        handle_non_owner(
+            uid,
+            lambda u, m: context.application.create_task(send(u, m))
+        )
 
 # =========================
-# MAIN
+# MAIN (Railway SAFE)
 # =========================
-async def main():
+def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, telegram_on_message))
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, telegram_on_message)
+    )
     print("Miss Bloosm running (FINAL)")
-    await app.run_polling()
+    app.run_polling()
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
