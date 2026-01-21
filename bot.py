@@ -1,6 +1,6 @@
 import os
 import json
-import time
+import asyncio
 from itertools import cycle
 
 from telegram import Update
@@ -63,7 +63,7 @@ def groq_chat(messages):
     return None
 
 # =========================
-# FILE MEMORY
+# FILE STORAGE (Railway)
 # =========================
 MEMORY_FILE = "memory.json"
 STATE_FILE = "state.json"
@@ -104,7 +104,7 @@ SERVER_OFFLINE_TEXT = (
 )
 
 CALM_PERSONAL_TEXT = (
-    "I am Looking, at peace in my own world, away from noise and questions, "
+    "I am personal, at peace in my own world, away from noise and questions, "
     "existing peacefully in my own inner garden. I am not missing, not hiding, "
     "not lost—just choosing stillness and living somewhere only I can reach. "
     "Good bye 👋"
@@ -145,16 +145,7 @@ def owner_chat(uid, text):
     return reply
 
 # =========================
-# JOB QUEUE CALLBACK (FIX)
-# =========================
-async def send_calm_message(context: ContextTypes.DEFAULT_TYPE):
-    uid = context.job.data
-    if get_state(uid) == STATE_OFFLINE_SENT:
-        await context.bot.send_message(chat_id=uid, text=CALM_PERSONAL_TEXT)
-        set_state(uid, STATE_SILENT)
-
-# =========================
-# TELEGRAM HANDLER
+# TELEGRAM HANDLER (FIXED)
 # =========================
 async def telegram_on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -169,19 +160,23 @@ async def telegram_on_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         await context.bot.send_message(chat_id=uid, text=reply)
         return
 
-    # NON OWNER
+    # NON-OWNER
     state = get_state(uid)
 
     if state == STATE_NEW:
         await context.bot.send_message(chat_id=uid, text=SERVER_OFFLINE_TEXT)
         set_state(uid, STATE_OFFLINE_SENT)
 
-        # ✅ SAFE DELAY (3 sec)
-        context.job_queue.run_once(
-            send_calm_message,
-            when=3,
-            data=uid
-        )
+        async def delayed_second_message():
+            await asyncio.sleep(3)
+            if get_state(uid) == STATE_OFFLINE_SENT:
+                await context.bot.send_message(
+                    chat_id=uid,
+                    text=CALM_PERSONAL_TEXT
+                )
+                set_state(uid, STATE_SILENT)
+
+        asyncio.create_task(delayed_second_message())
         return
 
     set_state(uid, STATE_SILENT)
@@ -194,7 +189,7 @@ def main():
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, telegram_on_message)
     )
-    print("Miss Bloosm running (STABLE)")
+    print("Miss Bloosm running (STABLE FINAL)")
     app.run_polling()
 
 if __name__ == "__main__":
