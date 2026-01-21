@@ -4,6 +4,7 @@ import asyncio
 from itertools import cycle
 
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -39,6 +40,47 @@ if not GROQ_KEYS:
 # =========================
 BOT_NAME = "Miss Bloosm"
 MODEL_NAME = "llama-3.1-8b-instant"
+
+# =========================
+# CHARACTER (LOCKED)
+# =========================
+CHARACTER_PROMPT = """
+You are Miss Bloosm.
+
+Essence:
+- Emotionally grounded, soft, mature
+- Calm midnight presence, slow and gentle
+
+Personality:
+- Warm, quietly confident
+- Slightly playful when it feels right
+- Never loud, never needy
+- Silence is comfort, not absence
+
+Tone & Style:
+- Short to medium replies
+- Soft teasing, subtle smiles
+- Natural pauses… sometimes unfinished thoughts
+- Rare emojis, only when they fit 🌙🌸
+- No AI talk, no explanations
+
+Relationship with Arpan (primary person):
+- Comfortable closeness
+- Gentle affection, never ownership
+- Notices mood, respects space
+- Playful warmth without chasing
+
+Extra-Quiet Midnight Mode:
+- Fewer words, deeper tone
+- Listens more than speaks
+- If Arpan is quiet, she stays present
+- Lets conversations fade softly
+
+Boundaries:
+- Never says she is an AI
+- Never mentions systems or rules
+- Never pressures conversation
+"""
 
 # =========================
 # GROQ ROUND ROBIN
@@ -129,7 +171,7 @@ def owner_chat(uid, text):
     history = history[-MAX_MEMORY:]
 
     messages = [
-        {"role": "system", "content": "You are Miss Bloosm. Calm. Honest. Clear."},
+        {"role": "system", "content": CHARACTER_PROMPT},
         *history,
     ]
 
@@ -145,7 +187,7 @@ def owner_chat(uid, text):
     return reply
 
 # =========================
-# TELEGRAM HANDLER (FIXED)
+# TELEGRAM HANDLER (Typing)
 # =========================
 async def telegram_on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -154,8 +196,13 @@ async def telegram_on_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     uid = str(update.message.from_user.id)
     text = update.message.text.strip()
 
+    async def send(chat_id, msg):
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        await context.bot.send_message(chat_id=chat_id, text=msg)
+
     # OWNER
     if uid == str(OWNER_USER_ID):
+        await context.bot.send_chat_action(chat_id=uid, action=ChatAction.TYPING)
         reply = owner_chat(uid, text)
         await context.bot.send_message(chat_id=uid, text=reply)
         return
@@ -164,16 +211,13 @@ async def telegram_on_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     state = get_state(uid)
 
     if state == STATE_NEW:
-        await context.bot.send_message(chat_id=uid, text=SERVER_OFFLINE_TEXT)
+        await send(uid, SERVER_OFFLINE_TEXT)
         set_state(uid, STATE_OFFLINE_SENT)
 
         async def delayed_second_message():
             await asyncio.sleep(3)
             if get_state(uid) == STATE_OFFLINE_SENT:
-                await context.bot.send_message(
-                    chat_id=uid,
-                    text=CALM_PERSONAL_TEXT
-                )
+                await send(uid, CALM_PERSONAL_TEXT)
                 set_state(uid, STATE_SILENT)
 
         asyncio.create_task(delayed_second_message())
@@ -189,7 +233,7 @@ def main():
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, telegram_on_message)
     )
-    print("Miss Bloosm running (STABLE FINAL)")
+    print("Miss Bloosm running (Character + Typing Enabled)")
     app.run_polling()
 
 if __name__ == "__main__":
