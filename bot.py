@@ -3,7 +3,6 @@ import json
 import time
 import threading
 from itertools import cycle
-from datetime import datetime, timezone
 
 from telegram import Update
 from telegram.ext import (
@@ -15,10 +14,9 @@ from telegram.ext import (
 
 from groq import Groq
 
-# ============================================================
+# =========================
 # ENV
-# ============================================================
-
+# =========================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OWNER_USER_ID = os.getenv("OWNER_USER_ID")
 
@@ -37,43 +35,42 @@ if not OWNER_USER_ID:
 if not GROQ_KEYS:
     raise RuntimeError("Groq keys missing")
 
-# ============================================================
+# =========================
 # IDENTITY
-# ============================================================
-
+# =========================
 BOT_NAME = "Miss Bloosm"
 MODEL_NAME = "llama-3.1-8b-instant"
-MAX_TOKENS = 220
 
-# ============================================================
-# GROQ ROUND ROBIN
-# ============================================================
-
-groq_cycle = cycle(GROQ_KEYS)
+# =========================
+# ROUND ROBIN (OLD STABLE)
+# =========================
+groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
+rr_index = 0
 
 def groq_chat(messages):
-    for _ in range(len(GROQ_KEYS)):
+    global rr_index
+    for _ in range(len(groq_clients)):
+        client = groq_clients[rr_index % len(groq_clients)]
+        rr_index += 1
         try:
-            client = Groq(api_key=next(groq_cycle))
             return client.chat.completions.create(
                 model=MODEL_NAME,
                 messages=messages,
                 temperature=0.6,
-                max_tokens=MAX_TOKENS,
+                max_tokens=250,
             )
         except Exception:
             continue
     return None
 
-# ============================================================
-# FILE MEMORY (Railway safe)
-# ============================================================
-
+# =========================
+# FILE MEMORY (Railway)
+# =========================
 MEMORY_FILE = "memory.json"
 STATE_FILE = "state.json"
 MAX_MEMORY = 40
 
-def _load(path, default):
+def load_file(path, default):
     if not os.path.exists(path):
         return default
     try:
@@ -82,28 +79,26 @@ def _load(path, default):
     except Exception:
         return default
 
-def _save(path, data):
+def save_file(path, data):
     try:
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
     except Exception:
         pass
 
-memory_db = _load(MEMORY_FILE, {})
-state_db = _load(STATE_FILE, {})
+memory_db = load_file(MEMORY_FILE, {})
+state_db = load_file(STATE_FILE, {})
 
-# ============================================================
+# =========================
 # STATES
-# ============================================================
-
+# =========================
 STATE_NEW = "new"
 STATE_OFFLINE_SENT = "offline_sent"
 STATE_SILENT = "silent"
 
-# ============================================================
-# LOCKED MESSAGES
-# ============================================================
-
+# =========================
+# LOCKED TEXTS
+# =========================
 SERVER_OFFLINE_TEXT = (
     "Server offline. This service has been permanently discontinued. "
     "No further responses will be generated."
@@ -112,27 +107,22 @@ SERVER_OFFLINE_TEXT = (
 CALM_PERSONAL_TEXT = (
     "I am personal, at peace in my own world, away from noise and questions, "
     "existing peacefully in my own inner garden. I am not missing, not hiding, "
-    "not lost—just choosing stillness and living somewhere only I can reach."
+    "not lost—just choosing stillness and living somewhere only I can reach. "
+    "Good bye 👋"
 )
-
-# ============================================================
-# UTIL
-# ============================================================
-
+# =========================
+# HELPERS
+# =========================
 def get_state(uid):
     return state_db.get(uid, STATE_NEW)
 
 def set_state(uid, state):
     state_db[uid] = state
-    _save(STATE_FILE, state_db)
+    save_file(STATE_FILE, state_db)
 
-def now_utc():
-    return datetime.now(timezone.utc).isoformat()
-
-# ============================================================
+# =========================
 # OWNER CHAT
-# ============================================================
-
+# =========================
 def owner_chat(uid, text):
     history = memory_db.get(uid, [])
     history.append({"role": "user", "content": text})
@@ -143,21 +133,20 @@ def owner_chat(uid, text):
         *history,
     ]
 
-    response = groq_chat(messages)
-    if not response:
+    res = groq_chat(messages)
+    if not res:
         return "I cannot process this right now."
 
-    reply = response.choices[0].message.content.strip()
+    reply = res.choices[0].message.content.strip()
     history.append({"role": "assistant", "content": reply})
 
     memory_db[uid] = history
-    _save(MEMORY_FILE, memory_db)
+    save_file(MEMORY_FILE, memory_db)
     return reply
 
-# ============================================================
-# NON-OWNER FLOW (LOCKED)
-# ============================================================
-
+# =========================
+# NON-OWNER FLOW (2 MSG ONLY)
+# =========================
 def handle_non_owner(uid, send):
     state = get_state(uid)
 
@@ -174,13 +163,11 @@ def handle_non_owner(uid, send):
         threading.Thread(target=delayed, daemon=True).start()
         return
 
-    # absolute silence
     set_state(uid, STATE_SILENT)
 
-# ============================================================
+# =========================
 # TELEGRAM HANDLER
-# ============================================================
-
+# =========================
 async def telegram_on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
@@ -188,41 +175,23 @@ async def telegram_on_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     uid = str(update.message.from_user.id)
     text = update.message.text.strip()
 
-    async def tg_send(u, m):
+    async def send(u, m):
         await context.bot.send_message(chat_id=u, text=m)
 
-    # OWNER
     if uid == str(OWNER_USER_ID):
         reply = owner_chat(uid, text)
-        await tg_send(uid, reply)
-        return
+        await send(uid, reply)
+    else:
+        handle_non_owner(uid, lambda u, m: context.application.create_task(send(u, m)))
 
-    # NON-OWNER
-    handle_non_owner(uid, lambda u, m: context.application.create_task(
-        tg_send(u, m)
-    ))
-
-# ============================================================
+# =========================
 # MAIN
-# ============================================================
-
+# =========================
 async def main():
-    app = (
-        ApplicationBuilder()
-        .token(TELEGRAM_BOT_TOKEN)
-        .build()
-    )
-
-    app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, telegram_on_message)
-    )
-
-    print("Miss Bloosm running")
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, telegram_on_message))
+    print("Miss Bloosm running (FINAL)")
     await app.run_polling()
-
-# ============================================================
-# BOOT (Railway SAFE)
-# ============================================================
 
 if __name__ == "__main__":
     import asyncio
