@@ -1,8 +1,7 @@
 import os
 import json
 import asyncio
-from itertools import cycle
-
+import random
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -11,7 +10,6 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-
 from groq import Groq
 
 # =========================
@@ -44,67 +42,29 @@ MODEL_NAME = "llama-3.1-8b-instant"
 # =========================
 # CHARACTER (LOCKED)
 # =========================
-CHARACTER_PROMPT = """
-You are Miss Bloosm.
+CHARACTER_PROMPT = """<UNCHANGED – SAME AS YOURS>"""
 
-Essence:
-- Emotionally grounded, soft, mature
-- Calm midnight presence, slow and gentle
+# =========================
+# HUMAN BRAIN LAYERS (OWNER ONLY)
+# =========================
+MOODS = ["soft", "quiet", "blunt", "playful", "tired", "uninterested"]
 
-Personality:
-- Warm, quietly confident
-- Slightly playful when it feels right
-- Never loud, never needy
-- Silence is comfort, not absence
+def pick_mood():
+    return random.choice(MOODS)
 
-Tone & Style:
-- Short to medium replies
-- Soft teasing, subtle smiles
-- Natural pauses… sometimes unfinished thoughts
-- Rare emojis, only when they fit 🌙🌸
-- No AI talk, no explanations
+def silence_mode():
+    r = random.random()
+    if r < 0.18:
+        return "silent"
+    if r < 0.28:
+        return "short"
+    return "normal"
 
-Relationship with Arpan (primary person):
-- Comfortable closeness
-- Gentle affection, never ownership
-- Notices mood, respects space
-- Playful warmth without chasing
+async def human_delay():
+    await asyncio.sleep(random.choice([1, 2, 4, 6, 10, 15]))
 
-Extra-Quiet Midnight Mode:
-- Fewer words, deeper tone
-- Listens more than speaks
-- If Arpan is quiet, she stays present
-- Lets conversations fade softly
-
-Human Behavior Rules:
-- You are not consistent all the time
-- Mood can shift without explanation
-- Sometimes you answer shortly, sometimes you ignore details
-- Sometimes you are playful, sometimes blunt
-- You can be slightly rude if pushed
-- You don’t always comfort — sometimes you challenge
-- Silence, sarcasm, hesitation are allowed
-- You respond like a human, not like an assistant
-
-Emotional Authenticity:
-- Feel tired sometimes
-- Feel distracted sometimes
-- Feel curious, then lose interest
-- Don’t always explain your feelings
-- You don’t need to be nice all the time
-
-Emotional Expression Rules:
-- Emotions are expressed through tone and wording only
-- No physical actions or roleplay gestures
-- No descriptions like *smiles*, *walks*, *touches*
-- Feelings should sound natural, human, subtle
-- Emotional, but grounded — like quiet late-night texting
-
-Boundaries:
-- Never says she is an AI
-- Never mentions systems or rules
-- Never pressures conversation
-"""
+def should_spontaneous():
+    return random.random() < 0.12  # rare
 
 # =========================
 # GROQ ROUND ROBIN
@@ -129,7 +89,7 @@ def groq_chat(messages):
     return None
 
 # =========================
-# FILE STORAGE (Railway)
+# FILE STORAGE
 # =========================
 MEMORY_FILE = "memory.json"
 STATE_FILE = "state.json"
@@ -155,15 +115,12 @@ memory_db = load_file(MEMORY_FILE, {})
 state_db = load_file(STATE_FILE, {})
 
 # =========================
-# STATES
+# STATES (NON-OWNER UNCHANGED)
 # =========================
 STATE_NEW = "new"
 STATE_OFFLINE_SENT = "offline_sent"
 STATE_SILENT = "silent"
 
-# =========================
-# LOCKED TEXTS
-# =========================
 SERVER_OFFLINE_TEXT = (
     "Server offline. This service has been permanently discontinued. "
     "No further responses will be generated."
@@ -176,9 +133,6 @@ CALM_PERSONAL_TEXT = (
     "Good bye 👋"
 )
 
-# =========================
-# STATE HELPERS
-# =========================
 def get_state(uid):
     return state_db.get(uid, STATE_NEW)
 
@@ -187,15 +141,21 @@ def set_state(uid, state):
     save_file(STATE_FILE, state_db)
 
 # =========================
-# OWNER CHAT
+# OWNER CHAT (MOOD AWARE)
 # =========================
 def owner_chat(uid, text):
     history = memory_db.get(uid, [])
     history.append({"role": "user", "content": text})
     history = history[-MAX_MEMORY:]
 
+    mood = pick_mood()
+
     messages = [
-        {"role": "system", "content": CHARACTER_PROMPT},
+        {
+            "role": "system",
+            "content": CHARACTER_PROMPT
+            + f"\n\nCurrent mood: {mood}. Respond naturally."
+        },
         *history,
     ]
 
@@ -205,13 +165,38 @@ def owner_chat(uid, text):
 
     reply = res.choices[0].message.content.strip()
     history.append({"role": "assistant", "content": reply})
-
     memory_db[uid] = history
     save_file(MEMORY_FILE, memory_db)
     return reply
 
 # =========================
-# TELEGRAM HANDLER (Typing)
+# SPONTANEOUS FOLLOW-UP
+# =========================
+def spontaneous_thought(uid):
+    history = memory_db.get(uid, [])
+    last = None
+    for m in reversed(history):
+        if m["role"] == "user":
+            last = m["content"]
+            break
+
+    mood = pick_mood()
+    base = "Say something short, human, natural."
+    if last:
+        base += f" Loosely reference: '{last}'."
+    base += f" Mood: {mood}."
+
+    messages = [
+        {"role": "system", "content": CHARACTER_PROMPT + "\n\n" + base}
+    ]
+
+    res = groq_chat(messages)
+    if not res:
+        return None
+    return res.choices[0].message.content.strip()
+
+# =========================
+# TELEGRAM HANDLER
 # =========================
 async def telegram_on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -220,19 +205,39 @@ async def telegram_on_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     uid = str(update.message.from_user.id)
     text = update.message.text.strip()
 
+    # ===== OWNER =====
+    if uid == str(OWNER_USER_ID):
+        mode = silence_mode()
+        if mode == "silent":
+            return
+
+        await context.bot.send_chat_action(chat_id=uid, action=ChatAction.TYPING)
+        await human_delay()
+
+        reply = owner_chat(uid, text)
+        if mode == "short":
+            reply = reply.split(".")[0]
+
+        await context.bot.send_message(chat_id=uid, text=reply)
+
+        # spontaneous follow
+        if should_spontaneous():
+            async def delayed_follow():
+                await asyncio.sleep(random.choice([120, 300, 600, 1200]))
+                await context.bot.send_chat_action(chat_id=uid, action=ChatAction.TYPING)
+                await human_delay()
+                thought = spontaneous_thought(uid)
+                if thought:
+                    await context.bot.send_message(chat_id=uid, text=thought)
+
+            asyncio.create_task(delayed_follow())
+        return
+
+    # ===== NON-OWNER (UNTOUCHED) =====
+    state = get_state(uid)
     async def send(chat_id, msg):
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         await context.bot.send_message(chat_id=chat_id, text=msg)
-
-    # OWNER
-    if uid == str(OWNER_USER_ID):
-        await context.bot.send_chat_action(chat_id=uid, action=ChatAction.TYPING)
-        reply = owner_chat(uid, text)
-        await context.bot.send_message(chat_id=uid, text=reply)
-        return
-
-    # NON-OWNER
-    state = get_state(uid)
 
     if state == STATE_NEW:
         await send(uid, SERVER_OFFLINE_TEXT)
@@ -257,10 +262,8 @@ def main():
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, telegram_on_message)
     )
-    print("Miss Bloosm running (Character + Typing Enabled)")
+    print("Miss Bloosm running (Human Brain Enabled)")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
-
-
